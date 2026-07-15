@@ -80,29 +80,58 @@ def process_and_respond(conn, audio_bytes):
             send_packet(conn, 0x03, b"IDLE")
             return
 
-        # 2. Query Local Ollama LLM
-        print(f"[LLM] Querying {LLM_MODEL}...")
-        system_prompt = (
-            "You are TARS, the witty, slightly sarcastic robot from Interstellar. "
-            "Maintain a humor setting of 75% and honesty setting of 90%. "
-            "Keep answers brief, smart, dry, and direct (max 2 sentences)."
-        )
-        response = ollama.chat(model=LLM_MODEL, messages=[
-            {'role': 'system', 'content': system_prompt},
-            {'role': 'user', 'content': user_text}
-        ])
-        tars_text = response['message']['content']
+        # --- WAKE WORD DETECTION & GESTURE LOGIC ---
+        # Normalize the incoming string (lowercase, remove punctuation)
+        clean_text = user_text.lower().translate(str.maketrans('', '', '.,!?')).strip()
+        wake_words = ["hey tars", "hi tars", "tars", "hello tars"]
+
+        is_wake_word_only = clean_text in wake_words
+        tars_text = ""
+
+        if is_wake_word_only:
+            # INSTANT BYPASS PATH: Respond immediately without querying Ollama
+            print("[WAKE] Standalone wake word recognized! Triggering quick physical perk up.")
+            tars_text = random.choice(["Yes?", "Hmm?", "Listening.", "Go ahead.", "I'm active."])
+            
+            # Physical Reaction: Tilt the body forward/left slightly to "look" up
+            # Left Leg: 100 degrees, Right Leg: 80 degrees (subtle, non-destructive offset)
+            send_packet(conn, 0x02, bytes([100, 80])) 
+            
+        else:
+            # Query path: If they said "Hey TARS, what time is it?", clean the prefix
+            query_text = user_text
+            for wake in wake_words:
+                if clean_text.startswith(wake):
+                    query_text = user_text[len(wake):].strip().lstrip(",.?! ")
+                    break
+            
+            if not query_text:
+                query_text = user_text # Fallback
+
+            # 2. Query Local Ollama LLM
+            print(f"[LLM] Querying {LLM_MODEL} with: '{query_text}'...")
+            system_prompt = (
+                "You are TARS, the witty, slightly sarcastic robot from Interstellar. "
+                "Maintain a humor setting of 75% and honesty setting of 90%. "
+                "Keep answers brief, smart, dry, and direct (max 2 sentences)."
+            )
+            response = ollama.chat(model=LLM_MODEL, messages=[
+                {'role': 'system', 'content': system_prompt},
+                {'role': 'user', 'content': query_text}
+            ])
+            tars_text = response['message']['content']
+
         print(f"TARS: {tars_text}")
 
         # 3. Text-to-Speech (Local offline TTS)
         print("[TTS] Synthesizing speech...")
         temp_out_wav = tempfile.mktemp(suffix=".wav")
         engine = pyttsx3.init()
-        engine.setProperty('rate', 145) # Classic flat, mechanical delivery rate
+        engine.setProperty('rate', 145) # Classic dry, mechanical pace
         engine.save_to_file(tars_text, temp_out_wav)
         engine.runAndWait()
 
-        # Load response WAV and format for the ESP32
+        # Load synthesized WAV and format for ESP32
         with wave.open(temp_out_wav, 'rb') as wf:
             params = wf.getparams()
             frames = wf.readframes(params.nframes)
@@ -120,17 +149,17 @@ def process_and_respond(conn, audio_bytes):
             data_resampled = resample_audio(data, params.framerate, 16000)
             pcm_bytes = data_resampled.tobytes()
 
-        # 4. Stream Audio Chunks and synchronized servo gestures back to TARS
-        print("[STREAM] Transmitting voice to TARS...")
+        # 4. Stream Audio Chunks back to TARS
+        print("[STREAM] Transmitting voice and animating...")
         send_packet(conn, 0x03, b"TALKING")
         
-        chunk_size = 1024 # 32ms of audio
+        chunk_size = 1024 # ~32ms of audio
         for i in range(0, len(pcm_bytes), chunk_size):
             chunk = pcm_bytes[i:i+chunk_size]
             send_packet(conn, 0x01, chunk)
 
-            # Every ~250ms (8 chunks), send a minor dynamic sway movement to servos
-            if (i // chunk_size) % 8 == 0:
+            # If it wasn't a wake-word-only event, do dynamic sways while talking
+            if not is_wake_word_only and (i // chunk_size) % 8 == 0:
                 left_angle = random.randint(84, 96)
                 right_angle = random.randint(84, 96)
                 send_packet(conn, 0x02, bytes([left_angle, right_angle]))
@@ -138,13 +167,15 @@ def process_and_respond(conn, audio_bytes):
             # Throttle stream speed to respect the ESP32's hardware buffer
             time.sleep(0.028)
 
-        # Reset mechanical frames to default
-        send_packet(conn, 0x02, bytes([90, 90]))
+        # 5. Return to Centered Home Position
+        print("[IDLE] Resettling chassis.")
+        send_packet(conn, 0x02, bytes([90, 90])) # Return both legs to flush alignment
         send_packet(conn, 0x03, b"IDLE")
         print("[DONE] Cycle complete.\n")
 
     except Exception as e:
         print(f"[ERROR] Pipeline breakdown: {e}")
+        send_packet(conn, 0x02, bytes([90, 90]))
         send_packet(conn, 0x03, b"ERROR")
         time.sleep(1.5)
         send_packet(conn, 0x03, b"IDLE")
