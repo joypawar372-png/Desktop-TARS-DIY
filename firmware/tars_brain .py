@@ -16,6 +16,20 @@ VAD_THRESHOLD = 600      # Sound sensitivity. Higher = less sensitive.
 SILENCE_TIMEOUT = 1.5    # How long to wait before deciding you finished talking (seconds)
 LLM_MODEL = "llama3.2:3b" # The model you pulled via Ollama
 
+# =========================================================================
+# --- Physical Servo Safety Limits (Adjust these if TARS tips over!) ---
+# =========================================================================
+SERVO_CENTER = 90        # Perfect upright alignment (Home)
+
+# Wake Word Tilt (Subtle posture shift. 3 degrees is highly stable)
+WAKE_TILT_L = 93         
+WAKE_TILT_R = 87         
+
+# Speaking Sway Limits (Tiny mechanical twitches. ±2 degrees maximum)
+SWAY_MIN = 88            
+SWAY_MAX = 92            
+# =========================================================================
+
 # --- Initialize Engines ---
 print("Loading Local OpenAI Whisper Model (base)...")
 whisper_model = whisper.load_model("base")
@@ -81,7 +95,6 @@ def process_and_respond(conn, audio_bytes):
             return
 
         # --- WAKE WORD DETECTION & GESTURE LOGIC ---
-        # Normalize the incoming string (lowercase, remove punctuation)
         clean_text = user_text.lower().translate(str.maketrans('', '', '.,!?')).strip()
         wake_words = ["hey tars", "hi tars", "tars", "hello tars"]
 
@@ -89,16 +102,15 @@ def process_and_respond(conn, audio_bytes):
         tars_text = ""
 
         if is_wake_word_only:
-            # INSTANT BYPASS PATH: Respond immediately without querying Ollama
-            print("[WAKE] Standalone wake word recognized! Triggering quick physical perk up.")
+            # INSTANT BYPASS PATH
+            print("[WAKE] Standalone wake word. Triggering safe, low-angle posture shift.")
             tars_text = random.choice(["Yes?", "Hmm?", "Listening.", "Go ahead.", "I'm active."])
             
-            # Physical Reaction: Tilt the body forward/left slightly to "look" up
-            # Left Leg: 100 degrees, Right Leg: 80 degrees (subtle, non-destructive offset)
-            send_packet(conn, 0x02, bytes([100, 80])) 
+            # Physical Reaction: Use our new safe, fixed tilt angles
+            send_packet(conn, 0x02, bytes([WAKE_TILT_L, WAKE_TILT_R])) 
             
         else:
-            # Query path: If they said "Hey TARS, what time is it?", clean the prefix
+            # Query path: Strip wake-word prefix
             query_text = user_text
             for wake in wake_words:
                 if clean_text.startswith(wake):
@@ -106,7 +118,7 @@ def process_and_respond(conn, audio_bytes):
                     break
             
             if not query_text:
-                query_text = user_text # Fallback
+                query_text = user_text
 
             # 2. Query Local Ollama LLM
             print(f"[LLM] Querying {LLM_MODEL} with: '{query_text}'...")
@@ -127,11 +139,11 @@ def process_and_respond(conn, audio_bytes):
         print("[TTS] Synthesizing speech...")
         temp_out_wav = tempfile.mktemp(suffix=".wav")
         engine = pyttsx3.init()
-        engine.setProperty('rate', 145) # Classic dry, mechanical pace
+        engine.setProperty('rate', 145)
         engine.save_to_file(tars_text, temp_out_wav)
         engine.runAndWait()
 
-        # Load synthesized WAV and format for ESP32
+        # Load synthesized WAV
         with wave.open(temp_out_wav, 'rb') as wf:
             params = wf.getparams()
             frames = wf.readframes(params.nframes)
@@ -145,7 +157,6 @@ def process_and_respond(conn, audio_bytes):
                 data = data[0::2]//2 + data[1::2]//2
                 data = data.astype(np.int16)
 
-            # Standardize output to matches our ESP32 16kHz setting
             data_resampled = resample_audio(data, params.framerate, 16000)
             pcm_bytes = data_resampled.tobytes()
 
@@ -153,34 +164,33 @@ def process_and_respond(conn, audio_bytes):
         print("[STREAM] Transmitting voice and animating...")
         send_packet(conn, 0x03, b"TALKING")
         
-        chunk_size = 1024 # ~32ms of audio
+        chunk_size = 1024
         for i in range(0, len(pcm_bytes), chunk_size):
             chunk = pcm_bytes[i:i+chunk_size]
             send_packet(conn, 0x01, chunk)
 
-            # If it wasn't a wake-word-only event, do dynamic sways while talking
+            # Dynamic, restricted jitters during speech
             if not is_wake_word_only and (i // chunk_size) % 8 == 0:
-                left_angle = random.randint(84, 96)
-                right_angle = random.randint(84, 96)
+                left_angle = random.randint(SWAY_MIN, SWAY_MAX)
+                right_angle = random.randint(SWAY_MIN, SWAY_MAX)
                 send_packet(conn, 0x02, bytes([left_angle, right_angle]))
 
-            # Throttle stream speed to respect the ESP32's hardware buffer
+            # Throttle stream speed to respect ESP32 buffer
             time.sleep(0.028)
 
-        # 5. Return to Centered Home Position
-        print("[IDLE] Resettling chassis.")
-        send_packet(conn, 0x02, bytes([90, 90])) # Return both legs to flush alignment
+        # 5. Return safely to center
+        print("[IDLE] Safely centering chassis.")
+        send_packet(conn, 0x02, bytes([SERVO_CENTER, SERVO_CENTER]))
         send_packet(conn, 0x03, b"IDLE")
         print("[DONE] Cycle complete.\n")
 
     except Exception as e:
         print(f"[ERROR] Pipeline breakdown: {e}")
-        send_packet(conn, 0x02, bytes([90, 90]))
+        send_packet(conn, 0x02, bytes([SERVO_CENTER, SERVO_CENTER]))
         send_packet(conn, 0x03, b"ERROR")
         time.sleep(1.5)
         send_packet(conn, 0x03, b"IDLE")
     finally:
-        # File System Cleanup
         if os.path.exists(temp_wav_path):
             os.remove(temp_wav_path)
         if os.path.exists(temp_out_wav):
@@ -197,7 +207,7 @@ def client_handler(conn, addr):
             if not magic:
                 break
             if magic != b'\xAA\xBB':
-                continue # Realign stream alignment
+                continue
 
             header = recv_all(conn, 3)
             if not header:
@@ -210,7 +220,6 @@ def client_handler(conn, addr):
             if not payload:
                 break
 
-            # Process inbound raw audio packets
             if packet_type == 0x01:
                 audio_data = np.frombuffer(payload, dtype=np.int16)
                 amplitude = np.abs(audio_data).mean() if len(audio_data) > 0 else 0
@@ -225,12 +234,11 @@ def client_handler(conn, addr):
                 else:
                     if is_recording:
                         raw_audio_buffer.extend(payload)
-                        silence_counter += len(payload) / 32000.0 # 32,000 bytes/sec bandwidth
+                        silence_counter += len(payload) / 32000.0
                         
                         if silence_counter >= SILENCE_TIMEOUT:
                             print("[VAD] Speech ended. Analyzing voice...")
                             is_recording = False
-                            # Spawn off-thread processing so socket receiver remains non-blocking
                             threading.Thread(target=process_and_respond, args=(conn, list(raw_audio_buffer))).start()
                             raw_audio_buffer.clear()
         except ConnectionResetError:
