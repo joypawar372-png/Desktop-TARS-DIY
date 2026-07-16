@@ -33,115 +33,140 @@ Rather than stuffing all electronics into the center body—which would cause se
 
 SCAD CODE
 
-// ====================================================================
-//        TARS MODEL-S (SIMPLE HOLLOW EDITION) - 120mm CHASSIS
-// ====================================================================
-// A simplified, wide-open layout with zero internal hardware slots.
-// Features clean, hollow interiors for manual hardware placement.
-// ====================================================================
+// =========================================================================
+// CODE 1: TARS REPLICA - CHASSIS & CYLINDRICAL SKID LEGS WITH DETENT POCKETS
+// Features: Completely sharp center body, legs with front/back bottom roll edges,
+//           wide-open internal cavity, and space-saving female detent lock tracks.
+// =========================================================================
 
-$fn = 64; // High-resolution curves for professional printing
+$fn = 64;
 
-// --- Global Structural Dimensions ---
-total_height = 120;
-total_depth  = 38;
-wall         = 2.0; // Rigid 2mm outer wall thickness
+// --- Core Mechanical Geometry (mm) ---
+body_w      = 60;   
+body_d      = 40;   
+body_h      = 120;  
+wall        = 2.5;  // Rugged uniform side walls
+cover_thick = 2;    
+leg_r       = 6;    // Front/Back bottom edge roll radius
 
-left_width   = 30;
-center_width = 60;  // Easily fits Node32S + 18650 side-by-side
-right_width  = 30;
+leg_w       = 20;   
+print_gap   = 25;   
 
-foot_radius  = 5.0; // Smooth curved bottom edges
-pivot_height = 60;  // Exact midpoint axis (vertical)
-pivot_depth  = 19;  // Exactly centered depth (19mm) for perfect balance
+// Internal Workspace Extents
+int_w = body_w - (2 * wall);
+int_h = body_h - (2 * wall);
+int_d = body_d - wall - cover_thick;
 
-// --- INTERACTIVE VIEW MODE CONTROL ---
-// "assembled"   = Full visual mockup of the three slabs aligned
-// "exploded"    = Spaced out parts showing alignment
-// "center_body" = Main center chassis only
-// "left_leg"    = Left leg outer segment only
-// "right_leg"   = Right leg outer segment only
-part_to_show = "exploded"; 
+// --- Slicing Build Deck Grid Array ---
+translate([0, 0, 0]) 
+    main_chassis_cabinet();
 
-// --- Color Scheme ---
-tars_color = [0.85, 0.85, 0.85]; // Matte industrial silver
+translate([-(body_w/2 + leg_w/2 + print_gap), 0, 0])
+    tars_skid_leg(side="left");
 
-// --- Rendering Director ---
-if (part_to_show == "assembled") {
-    color(tars_color) left_leg();
-    translate([left_width, 0, 0]) color(tars_color) center_body();
-    translate([left_width + center_width, 0, 0]) color(tars_color) right_leg();
-} else if (part_to_show == "exploded") {
-    translate([-25, 0, 0]) color(tars_color) left_leg();
-    translate([0, 0, 0]) color(tars_color) center_body();
-    translate([85, 0, 0]) color(tars_color) right_leg();
-} else if (part_to_show == "center_body") {
-    center_body();
-} else if (part_to_show == "left_leg") {
-    left_leg();
-} else if (part_to_show == "right_leg") {
-    right_leg();
-}
+translate([(body_w/2 + leg_w/2 + print_gap), 0, 0])
+    tars_skid_leg(side="right");
 
-// ====================================================================
-// --- SYSTEM MODULES ---
-// ====================================================================
-
-// Generates the core iconic TARS geometric slab profile with rounded feet
-module tars_slab_base(w, h, d, r) {
+// =========================================================================
+// HELPER: LEGS WITH SHARP SIDES AND CYLINDRICAL FRONT/BACK BOTTOM EDGES
+// =========================================================================
+module leg_skid_monolith(w, d, h, r) {
     hull() {
-        translate([0, 0, r]) cube([w, d, h - r]);
-        translate([0, r, r]) rotate([0, 90, 0]) cylinder(r=r, h=w);
-        translate([0, d-r, r]) rotate([0, 90, 0]) cylinder(r=r, h=w);
-    }
-}
-
-// Hollow core generator (Leaves a completely open back to insert components)
-module hollow_slab(w, h, d, r, wall_t) {
-    difference() {
-        tars_slab_base(w, h, d, r);
-        // Hollows out from the back, leaving a solid front face
-        translate([wall_t, wall_t, wall_t]) 
-            cube([w - (2 * wall_t), d - wall_t + 1, h - (2 * wall_t)]);
-    }
-}
-
-// --- SLAB 1: SIMPLE LEFT LEG ---
-module left_leg() {
-    difference() {
-        hollow_slab(left_width, total_height, total_depth, foot_radius, wall);
-        // Axle connection socket on internal face (right wall)
-        translate([left_width - wall - 1, pivot_depth, pivot_height])
-            rotate([0, 90, 0]) cylinder(r=3.5, h=wall + 2);
-    }
-}
-
-// --- SLAB 3: SIMPLE RIGHT LEG ---
-module right_leg() {
-    difference() {
-        hollow_slab(right_width, total_height, total_depth, foot_radius, wall);
-        // Axle connection socket on internal face (left wall)
-        translate([-1, pivot_depth, pivot_height])
-            rotate([0, 90, 0]) cylinder(r=3.5, h=wall + 2);
-    }
-}
-
-// --- SLAB 2: SIMPLE CENTER CHASSIS ---
-module center_body() {
-    difference() {
-        hollow_slab(center_width, total_height, total_depth, foot_radius, wall);
+        // Sharp Top Plate Boundary
+        translate([-w/2, -d/2, h - 0.1]) 
+            cube([w, d, 0.1]);
         
-        // 1. OLED Screen Cutout (0.96" window size: 22.4mm x 11.5mm)
-        // Perfectly centered horizontally, 15mm down from the top edge
-        translate([(center_width - 22.4)/2, -1, total_height - 15 - 11.5])
-            cube([22.4, wall + 2, 11.5]);
+        // Bottom Front Cylindrical Skid Edge
+        translate([-w/2, -d/2 + r, r]) 
+            rotate([0, 90, 0]) cylinder(r=r, h=w);
             
-        // 2. Left Axle Pass-through Hole
-        translate([-1, pivot_depth, pivot_height])
-            rotate([0, 90, 0]) cylinder(r=3.5, h=wall + 2);
-            
-        // 3. Right Axle Pass-through Hole
-        translate([center_width - wall - 1, pivot_depth, pivot_height])
-            rotate([0, 90, 0]) cylinder(r=3.5, h=wall + 2);
+        // Bottom Back Cylindrical Skid Edge
+        translate([-w/2, d/2 - r, r]) 
+            rotate([0, 90, 0]) cylinder(r=r, h=w);
+    }
+}
+
+// =========================================================================
+// COMPONENT 1: ELECTRONICS CHASSIS CABINET (WITH DETENT RECESSES)
+// =========================================================================
+module main_chassis_cabinet() {
+    difference() {
+        // Sharp rectangular outer hull
+        translate([-body_w/2, -body_d/2, 0]) 
+            cube([body_w, body_d, body_h]);
+        
+        // 1. Clean Open Internal Cavity
+        translate([-int_w/2, -body_d/2 + wall, wall]) 
+            cube([int_w, int_d + 0.1, int_h]);
+        
+        // 2. Inset Lip Frame Border Step for Flush Seating
+        translate([-(body_w - 2.5)/2, body_d/2 - cover_thick, 1.5]) 
+            cube([body_w - 2.5, cover_thick + 0.1, body_h - 3]);
+        
+        // 3. Center Concentric Pass-Through Axle Holes
+        translate([0, 0, body_h/2]) 
+            rotate([0, 90, 0]) cylinder(r=3.5, h=body_w + 2, center=true);
+        
+        // 4. SPACE-SAVING DETENT LOCKING RECESSES (Horizontal retention grooves)
+        for (z_pos = [25, 95]) {
+            // Left Side Wall Grooves
+            translate([-int_w/2 - 0.5, body_d/2 - cover_thick - 2.5, z_pos]) 
+                cube([0.6, 5.2, 1.2], center=true);
+            // Right Side Wall Grooves
+            translate([int_w/2 + 0.5, body_d/2 - cover_thick - 2.5, z_pos]) 
+                cube([0.6, 5.2, 1.2], center=true);
+        }
+        
+        // 5. 0.96" OLED Screen Bezel
+        translate([-22.4/2, -body_d/2 - 0.1, 98]) cube([22.4, wall + 0.2, 11.5]);
+        
+        // 6. TP4056 USB-C Interface Entry Port
+        translate([-body_w/2 - 0.1, -body_d/2 + wall + 4, wall + 5]) cube([wall + 0.2, 5.0, 11.0]);
+    }
+}
+
+// =========================================================================
+// COMPONENT 2: OUTER LEGS (SHARP SIDES, CYLINDRICAL BOTTOM EDGES)
+// =========================================================================
+module tars_skid_leg(side="left") {
+    leg_int_w = leg_w - (2 * wall);
+    difference() {
+        // Main Solid Leg Structure
+        leg_skid_monolith(leg_w, body_d, body_h, leg_r);
+        
+        // 1. Deep Cavity Extraction
+        translate([0, 0, 0])
+            difference() {
+                translate([-leg_int_w/2, -body_d/2 + wall, wall]) 
+                    cube([leg_int_w, int_d + 0.1, int_h]);
+                translate([-leg_w/2, -body_d/2 + leg_r, leg_r])
+                    rotate([0,90,0]) cylinder(r=leg_r - wall, h=leg_w);
+                translate([-leg_w/2, body_d/2 - leg_r, leg_r])
+                    rotate([0,90,0]) cylinder(r=leg_r - wall, h=leg_w);
+            }
+        
+        // 2. Rear Recessed Step Lip for Back Cover Seating
+        translate([-(leg_w - 2.5)/2, body_d/2 - cover_thick, 1.5]) 
+            cube([leg_w - 2.5, cover_thick + 0.1, body_h - 3]);
+        
+        // 3. SPACE-SAVING LEG DETENT RECESSES
+        for (z_pos = [25, 95]) {
+            translate([-leg_int_w/2 - 0.5, body_d/2 - cover_thick - 2.5, z_pos]) 
+                cube([0.6, 5.2, 1.2], center=true);
+            translate([leg_int_w/2 + 0.5, body_d/2 - cover_thick - 2.5, z_pos]) 
+                cube([0.6, 5.2, 1.2], center=true);
+        }
+        
+        // 4. Blind Pivot Axle Hole (Sealed completely on the exterior face)
+        if (side == "left") {
+            translate([0, 0, body_h/2]) rotate([0, 90, 0]) cylinder(r=3.5, h=leg_w/2 + 2);
+        } else {
+            translate([-(leg_w/2 + 2), 0, body_h/2]) rotate([0, 90, 0]) cylinder(r=3.5, h=leg_w/2 + 2);
+        }
+        
+        // 5. Visual Segment Detail Paneling Lines
+        translate([side == "left" ? leg_w/2 - 0.5 : -leg_w/2 - 0.1, -body_d/2 - 0.1, body_h/2]) cube([0.6, body_d + 0.2, 0.6]);
+        translate([side == "left" ? leg_w/2 - 0.5 : -leg_w/2 - 0.1, -body_d/2 - 0.1, body_h/2 + 30]) cube([0.6, body_d + 0.2, 0.6]);
+        translate([side == "left" ? leg_w/2 - 0.5 : -leg_w/2 - 0.1, -body_d/2 - 0.1, body_h/2 - 30]) cube([0.6, body_d + 0.2, 0.6]);
     }
 }
