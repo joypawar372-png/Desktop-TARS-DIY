@@ -170,3 +170,116 @@ module tars_skid_leg(side="left") {
         translate([side == "left" ? leg_w/2 - 0.5 : -leg_w/2 - 0.1, -body_d/2 - 0.1, body_h/2 - 30]) cube([0.6, body_d + 0.2, 0.6]);
     }
 }
+
+
+
+
+
+
+// =========================================================================
+// CODE 2: TARS REPLICA - RUGGED DETENT SNAP-FIT REAR COVERS
+// Contains: 1x Vented Center Cover, 2x Bottom-Curved Leg Backplates.
+// Features: Low-profile, highly rigid detent blocks that won't snap off.
+// =========================================================================
+
+$fn = 64;
+
+// --- Dimensions Synchronized with Code 1 ---
+body_w      = 60;   
+body_h      = 120;  
+body_d      = 40;
+leg_w       = 20;
+cover_thick = 2;    
+leg_r       = 6;    
+
+// --- Slicing Plate Matrix Layout ---
+translate([0, 0, 0])
+    main_chassis_vented_cover();
+
+translate([-45, 0, 0])
+    leg_locking_cover();
+    
+translate([45, 0, 0])
+    leg_locking_cover();
+
+// =========================================================================
+// HELPER: RUGGED STUBBY DETENT LOCKING LUG (Extremely durable)
+// =========================================================================
+module stubby_detent_lug(direction="left") {
+    // A thick, compact block that uses the chassis' wall flexing to lock securely
+    union() {
+        // High-strength mounting base pillar
+        cube([1.4, 5.0, 3.5]);
+        
+        // Solid locking bead (half-cylinder profile)
+        translate([direction == "left" ? -0.4 : 1.4, 2.5, 1.75]) 
+            rotate([90, 0, 0]) 
+            cylinder(r=0.45, h=5.0, center=true);
+    }
+}
+
+// =========================================================================
+// COMPONENT 1: VENTILATED CENTER COVER PLATE (COMPLETELY SHARP EDGES)
+// =========================================================================
+module main_chassis_vented_cover() {
+    clearance = 0.35; // Fine-tuned assembly clearance
+    w = body_w - 2.5 - clearance;
+    h = body_h - 3.0 - clearance;
+    
+    union() {
+        difference() {
+            // Main Flat Panel Base
+            translate([-w/2, -h/2, 0]) 
+                cube([w, h, cover_thick]);
+            
+            // Thermal Dissipation Grids
+            for (v_row = [-40 : 8 : -10]) {
+                for (v_col = [-16 : 8 : 16]) {
+                    translate([v_col, v_row, cover_thick/2]) 
+                        cube([3, 5, cover_thick + 0.5], center=true);
+                }
+            }
+            for (v_col = [-12 : 8 : 12]) {
+                translate([v_col, 30, cover_thick/2]) 
+                    cube([3, 20, cover_thick + 0.5], center=true);
+            }
+        }
+        
+        // 4x Ultra-Rugged Detent Lugs (Positioned right at the structural boundaries)
+        translate([-w/2, -h/2 + 25 - 2.5, cover_thick])  stubby_detent_lug("left");
+        translate([-w/2, -h/2 + 95 - 2.5, cover_thick])  stubby_detent_lug("left");
+        translate([w/2 - 1.4, -h/2 + 25 - 2.5, cover_thick]) stubby_detent_lug("right");
+        translate([w/2 - 1.4, -h/2 + 95 - 2.5, cover_thick]) stubby_detent_lug("right");
+    }
+}
+
+// =========================================================================
+// COMPONENT 2: LEG COMPARTMENT CLOSURE SHIELD (BOTTOM-CURVED)
+// =========================================================================
+module leg_locking_cover() {
+    clearance = 0.35;
+    w = leg_w - 2.5 - clearance;
+    h = body_h - 3.0 - clearance;
+    
+    union() {
+        difference() {
+            // Main Flat Panel Base
+            translate([-w/2, -h/2, 0]) 
+                cube([w, h, cover_thick]);
+            
+            // Cylindrical cut out at the bottom to match the leg profile sweep
+            translate([-w/2 - 0.1, -h/2 - 0.1, leg_r - 1.5])
+                rotate([0, 90, 0])
+                difference() {
+                    translate([-leg_r, -leg_r, 0]) cube([leg_r*2, leg_r*2, w + 0.2]);
+                    cylinder(r=leg_r, h=w + 0.2);
+                }
+        }
+        
+        // 4x Ultra-Rugged Detent Lugs
+        translate([-w/2, -h/2 + 25 - 2.5, cover_thick])  stubby_detent_lug("left");
+        translate([-w/2, -h/2 + 95 - 2.5, cover_thick])  stubby_detent_lug("left");
+        translate([w/2 - 1.4, -h/2 + 25 - 2.5, cover_thick]) stubby_detent_lug("right");
+        translate([w/2 - 1.4, -h/2 + 95 - 2.5, cover_thick]) stubby_detent_lug("right");
+    }
+}
