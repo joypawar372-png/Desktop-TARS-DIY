@@ -10,6 +10,19 @@ To achieve an incredibly compact footprint without sacrificing processing power,
 
 1. **The Edge Client (TARS):** Powered by an **ESP32 Node32S**, TARS handles raw physical inputs/outputs—streaming voice from an I2S microphone, outputting generated audio via an I2S amplifier/speaker, and driving two SG90 servos for animated "chuckles" and gestures.
 2. **The Host Brain (Local PC):** Runs a local Python pipeline. It ingests the audio stream, processes Speech-to-Text via **Faster-Whisper**, queries a local LLM via **Ollama** using a customized TARS personality system prompt, synthesizes natural-sounding speech via **Piper TTS**, and streams the audio back to TARS over Wi-Fi.
+3. Microcontroller (1x): ESP32 or Raspberry Pi Pico (selected for compact form factor).
+
+Micro Servos (2x): SG90 Micro Servos (for leg articulation).
+
+LiPo Battery (1x): 3.7V Lithium-Polymer (max 35mm width to fit internal guide rails).
+
+OLED Display (1x): 0.96" I2C OLED Module.
+
+Charging Module (1x): USB-C Charging/Protection Module (e.g., TP4056 with USB-C input).
+
+Fasteners (16x): M2 x 5mm Self-Tapping Screws (for mounting components to internal standoffs).
+
+Wiring (1x Set): Flexible silicone-insulated jumper wires (26-30 AWG recommended).
 
 ---
 
