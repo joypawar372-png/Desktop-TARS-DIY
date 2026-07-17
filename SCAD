@@ -178,3 +178,89 @@ module tars_cavity_leg(side="left") {
         }
     }
 }
+
+
+
+
+
+
+BACK COVER---------
+// =========================================================================
+// CODE 2: TARS SNAP-FIT COVERS WITH INTEGRATED MAIN-BODY AIR VENTS
+// Features: Flat-bed print configuration, low-profile rim-lock detents,
+//           wall-offset tactical lines, and clean electronics cooling slots.
+// =========================================================================
+
+$fn = 64;
+
+// --- Architecture Parameters (Must mirror Code 1 exactly) ---
+body_w      = 60;   
+body_h      = 120;  
+leg_w       = 20;   
+wall        = 2.5;  // Core structural offset thickness
+cover_thick = 2;    // Panel depth matching chassis step-recesses
+print_gap   = 20;   // Layout spacing on the build plate
+
+// --- Print Bed Layout Arrangement ---
+translate([0, 0, 0]) 
+    tars_snap_cover(target_w=body_w); // Central Core Chassis Back Panel (With Vents)
+
+translate([-(body_w/2 + leg_w/2 + print_gap), 0, 0]) 
+    tars_snap_cover(target_w=leg_w);  // Left Leg Back Panel (Solid)
+
+translate([(body_w/2 + leg_w/2 + print_gap), 0, 0]) 
+    tars_snap_cover(target_w=leg_w);  // Right Leg Back Panel (Solid)
+
+
+// =========================================================================
+// UNIVERSAL COMPONENT PANEL MODULE
+// =========================================================================
+module tars_snap_cover(target_w) {
+    clearance = 0.35; // 3D printing mechanical tolerance buffer
+    
+    // Calculate final panel dimensions based on internal chassis step borders
+    cw = target_w - 2.5 - clearance;
+    ch = body_h - 2*wall - clearance;
+    
+    union() {
+        difference() {
+            // Main Shield Faceplate
+            translate([-cw/2, 0, 0]) 
+                cube([cw, ch, cover_thick]);
+            
+            // External Tactical Grooves 
+            // Offset by 'wall' thickness to register seamlessly with chassis lines
+            for(y_line = [30 - wall, 60 - wall, 90 - wall]) {
+                translate([-cw/2 - 1, y_line - 0.3, cover_thick - 0.5]) 
+                    cube([cw + 2, 0.6, 0.6]);
+            }
+            
+            // INTEGRATED AIR VENTS (Applied only to the Main Body Center Cover)
+            if (target_w == body_w) {
+                // Upper cooling array (Electronics bay area: Y = 68 to 80)
+                for (y_vent = [68, 72, 76, 80]) {
+                    translate([-15, y_vent, -0.1]) 
+                        cube([30, 1.5, cover_thick + 0.2]);
+                }
+                
+                // Lower cooling array (Battery/Regulator bay area: Y = 38 to 50)
+                for (y_vent = [38, 42, 46, 50]) {
+                    translate([-15, y_vent, -0.1]) 
+                        cube([30, 1.5, cover_thick + 0.2]);
+                }
+            }
+        }
+        
+        // Low-Profile Micro-Cylindrical Perimeter Detent Locking Registration Beads
+        // Sized at R=0.35mm to securely match the negative space pockets in Code 1
+        for (y_pos = [20 - wall, 50 - wall, 85 - wall, 110 - wall]) {
+            translate([-cw/2, y_pos, cover_thick/2]) 
+                rotate([90, 0, 0]) 
+                cylinder(r=0.35, h=3.5, center=true);
+                
+            translate([cw/2, y_pos, cover_thick/2])  
+                rotate([90, 0, 0]) 
+                cylinder(r=0.35, h=3.5, center=true);
+        }
+    }
+}
