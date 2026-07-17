@@ -1,144 +1,179 @@
-
 // =========================================================================
-// TARS REPLICA - MASTER CENTRAL CORE CHASSIS (MAIN BODY ONLY)
-// =========================================================================
-// Coordinates all structural, mechanical, and tactical features:
-// - Sharp 60x40x120mm external dimensions
-// - Low-profile edge rim-detent snap pockets for the back cover
-// - 4x M2 PCB mounting standoffs on the floor
-// - OLED snap-fit flexible clips behind the front bezel
-// - Front-wall LiPo battery slide-in guide rails
-// - Dual SG90 micro servo brackets with screw bosses and stepped spline holes
-// - Integrated side USB-C charging port cutout
-// - Engraved tactical detail grid lines and calibration ticks
-// - Vertically stacked, 90° anticlockwise rotated front-left TARS typography
+// CODE 1: TARS REPLICA MAIN ASSEMBLY (CENTRAL CORE & HOLLOW KINEMATIC LEGS)
+// Constraints Met: 60x40x120mm profile, minimal R2 bottom corner radii,
+//                  sharp top edges, 14mm lateral friction reduction bosses,
+//                  internal leg/core cavities, M2 standoffs, LiPo slots,
+//                  OLED snap hooks, Type-C cutout, and vertical rotated logo.
 // =========================================================================
 
 $fn = 64;
 
-// --- Core Mechanical Geometry (mm) ---
+// --- Global Design Parameters ---
 body_w      = 60;   
 body_d      = 40;   
 body_h      = 120;  
 wall        = 2.5;  // Uniform structural high-strength wall thickness
-cover_thick = 2;    
+cover_thick = 2;    // Thickness matching the snap-fit back panels
+leg_w       = 20;   
+pivot_z     = 60;   // Precise central rotational pivot axis
+print_gap   = 30;   // Slicing separation distance on the build deck
 
-// Internal Workspace Extents
-int_w = body_w - (2 * wall);
-int_h = body_h - (2 * wall);
-int_d = body_d - wall - cover_thick;
-lip_w = body_w - 2.5;
+// --- Render Print Layout Matrix ---
+translate([0, 0, 0]) 
+    tars_central_core();
 
-// --- Helper Module: M2 PCB Standoff Pillars ---
-module pcb_standoff(x, y) {
-    translate([x, y, wall]) {
-        difference() {
-            cylinder(r=2.5, h=5.0);
-            translate([0, 0, -0.1])
-                cylinder(r=1.0, h=5.2); // Core diameter for self-tapping M2 screws
+translate([-(body_w/2 + leg_w/2 + print_gap), 0, 0])
+    tars_cavity_leg(side="left");
+
+translate([(body_w/2 + leg_w/2 + print_gap), 0, 0])
+    tars_cavity_leg(side="right");
+
+
+// =========================================================================
+// COMPONENT 1: CENTRAL CORE MECHANICS CHASSIS
+// =========================================================================
+module tars_central_core() {
+    lip_w = body_w - 2.5;
+    
+    difference() {
+        // --- POSITIVE HOUSING STRUCTURE ---
+        union() {
+            // Monolithic rectangular frame block
+            translate([-body_w/2, -body_d/2, 0]) 
+                cube([body_w, body_d, body_h]);
+            
+            // Integrated M2 Microcontroller Mounting Pillars
+            translate([-15, -10, wall]) difference() { cylinder(r=2.5, h=5.0); cylinder(r=1.0, h=5.2); }
+            translate([15, -10, wall])  difference() { cylinder(r=2.5, h=5.0); cylinder(r=1.0, h=5.2); }
+            translate([-15, 10, wall])  difference() { cylinder(r=2.5, h=5.0); cylinder(r=1.0, h=5.2); }
+            translate([15, 10, wall])   difference() { cylinder(r=2.5, h=5.0); cylinder(r=1.0, h=5.2); }
+            
+            // OLED PCB Snap-Fit Flex Hooks (Behind display window mask)
+            translate([-14, -body_d/2 + wall, 96])      cube([1.5, 3.0, 15.0]);
+            translate([-14, -body_d/2 + wall + 3, 96])  cube([3.0, 1.0, 15.0]); 
+            translate([12.5, -body_d/2 + wall, 96])     cube([1.5, 3.0, 15.0]);
+            translate([11.0, -body_d/2 + wall + 3, 96]) cube([3.0, 1.0, 15.0]); 
+            
+            // LiPo Battery Retention Rails (Sized up to 35mm wide cells)
+            translate([-18.5, -body_d/2 + wall, 25])     cube([2.0, 6.0, 45.0]);
+            translate([-18.5, -body_d/2 + wall + 6, 25]) cube([4.0, 1.5, 45.0]);
+            translate([16.5, -body_d/2 + wall, 25])      cube([2.0, 6.0, 45.0]);
+            translate([14.5, -body_d/2 + wall + 6, 25])  cube([4.0, 1.5, 45.0]);
+            
+            // Dual SG90 Micro Servo Structural Brackets
+            // Left Bracket Pair
+            translate([-body_w/2 + wall, -6.1, pivot_z + 11.5]) cube([6.0, 12.2, 4.0]);
+            translate([-body_w/2 + wall, -6.1, pivot_z - 15.5]) cube([6.0, 12.2, 4.0]);
+            // Right Bracket Pair
+            translate([body_w/2 - wall - 6, -6.1, pivot_z + 11.5]) cube([6.0, 12.2, 4.0]);
+            translate([body_w/2 - wall - 6, -6.1, pivot_z - 15.5]) cube([6.0, 12.2, 4.0]);
+        }
+        
+        // --- NEGATIVE SPACE INTERIOR CUTOUTS ---
+        
+        // Main Core Internal Cavity (Saves volume, drops weight, houses logic electronics)
+        translate([-body_w/2 + wall, -body_d/2 + wall, wall]) 
+            cube([body_w - 2*wall, body_d - wall - cover_thick, body_h - 2*wall]);
+        
+        // Recessed Rear lip step frame border for snap-plate integration
+        translate([-lip_w/2, body_d/2 - cover_thick, wall]) 
+            cube([lip_w, cover_thick + 0.1, body_h - 2*wall]);
+        
+        // Rim-Detent Locking Pockets
+        for (z_pos = [20, 50, 85, 110]) {
+            translate([-lip_w/2 - 0.2, body_d/2 - cover_thick/2, z_pos]) cube([0.6, 4.0, 1.2], center=true);
+            translate([lip_w/2 + 0.2, body_d/2 - cover_thick/2, z_pos]) cube([0.6, 4.0, 1.2], center=true);
+        }
+        
+        // 0.96" OLED Bezel Viewing Slot
+        translate([-22.4/2, -body_d/2 - 0.1, 98]) cube([22.4, wall + 0.2, 11.5]);
+        
+        // Integrated Universal Type-C Charging Breakout Board Interface Port Cutout
+        translate([-body_w/2 - 0.1, -6.0, 12.0]) cube([wall + 0.2, 12.0, 6.5]);
+        
+        // VERTICAL rotated TARS Logo: Front-left placement, exactly 5mm below the screen window bounding margin
+        translate([-body_w/2 + 4.5, -body_d/2 + 0.5, 93]) 
+            rotate([90, 0, 90]) // 90 Degrees Anticlockwise from horizontal orientation plane
+            linear_extrude(height = 0.6) 
+            text("TARS", font = "Liberation Sans:style=Bold", size = 5.5, halign = "right", valign = "center");
+        
+        // Mechanical Servo Spline Output Shaft Clearance Ports
+        translate([-body_w/2 - 0.1, 0, pivot_z]) rotate([0, 90, 0]) cylinder(r=4.0, h=wall + 0.2);
+        translate([body_w/2 - wall - 0.1, 0, pivot_z]) rotate([0, 90, 0]) cylinder(r=4.0, h=wall + 0.2);
+        
+        // M2 Pilot Screw Flange Holes for Servo Fastening
+        translate([-body_w/2 + wall + 3, 0, pivot_z + 13.5]) rotate([0, 90, 0]) cylinder(r=0.9, h=10, center=true);
+        translate([-body_w/2 + wall + 3, 0, pivot_z - 13.5]) rotate([0, 90, 0]) cylinder(r=0.9, h=10, center=true);
+        translate([body_w/2 - wall - 3, 0, pivot_z + 13.5]) rotate([0, 90, 0]) cylinder(r=0.9, h=10, center=true);
+        translate([body_w/2 - wall - 3, 0, pivot_z - 13.5]) rotate([0, 90, 0]) cylinder(r=0.9, h=10, center=true);
+        
+        // Coordinated Tactical Front Horizontal Panel Grooves (Synced across entire robot profile)
+        for (z_line = [30, 60, 90]) {
+            translate([-body_w/2 - 1, -body_d/2 - 0.1, z_line - 0.3]) cube([body_w + 2, 0.6, 0.6]);
+        }
+        
+        // Calibration Scale Index Alignment Ticks
+        for (x_tick = [-20, -10, 0, 10, 20]) {
+            translate([x_tick - 0.3, -body_d/2 - 0.1, pivot_z - 3]) cube([0.6, 0.6, 6.0]);
         }
     }
 }
 
-// --- MAIN CHASSIS MONOLITH ASSEMBLY ---
-difference() {
-    // =====================================================================
-    // 1. POSITIVE STRUCTURAL ADDITIONS
-    // =====================================================================
-    union() {
-        // Master external rectangular solid block
-        translate([-body_w/2, -body_d/2, 0]) 
-            cube([body_w, body_d, body_h]);
+// =========================================================================
+// COMPONENT 2: LOW-FRICTION ROTATIONAL KINEMATIC CAVITY LEGS
+// =========================================================================
+module tars_cavity_leg(side="left") {
+    r_val = 2; // Subtle edge radius preventing ground friction binding while maintaining box silhouette
+    lip_w = leg_w - 2.5;
+    
+    difference() {
+        // --- POSITIVE STRUCTURAL VOLUME ---
+        union() {
+            // Main Leg Footprint: Morphs box top into ultra-subtle cylindrical bottom profiles
+            hull() {
+                // Top half remains entirely flat, sharp, and boxy
+                translate([-leg_w/2, -body_d/2, pivot_z]) 
+                    cube([leg_w, body_d, body_h - pivot_z]);
+                
+                // Bottom front and back corners resolved as minimal horizontal cylinders
+                translate([-leg_w/2, -body_d/2 + r_val, r_val]) rotate([0, 90, 0]) cylinder(r=r_val, h=leg_w);
+                translate([-leg_w/2, body_d/2 - r_val, r_val]) rotate([0, 90, 0]) cylinder(r=r_val, h=leg_w);
+            }
+            
+            // 14mm Diameter, 0.5mm Thickness Friction-Reduction Raised Face Boss
+            if (side == "left") {
+                translate([leg_w/2, 0, pivot_z]) rotate([0, 90, 0]) cylinder(r=7.0, h=0.5);
+            } else if (side == "right") {
+                translate([-leg_w/2 - 0.5, 0, pivot_z]) rotate([0, 90, 0]) cylinder(r=7.0, h=0.5);
+            }
+        }
         
-        // Internal Feature Group A: Microcontroller Standoffs (Floor)
-        pcb_standoff(-12, -10);
-        pcb_standoff(12, -10);
-        pcb_standoff(-12, 10);
-        pcb_standoff(12, 10);
+        // --- NEGATIVE INTERNAL SPACES ---
         
-        // Internal Feature Group B: OLED PCB Snap-Fit Clips
-        // Custom L-shaped flex catches tailored for standard 0.96" OLED PCB modules
-        translate([-13.5, -17.5, 98]) cube([1.5, 3.5, 11.5]);
-        translate([-13.5, -14.0, 98]) cube([3.0, 1.2, 11.5]); // Left hook projection
-        translate([12.0, -17.5, 98])  cube([1.5, 3.5, 11.5]);
-        translate([10.5, -14.0, 98])  cube([3.0, 1.2, 11.5]);  // Right hook projection
+        // Internal Leg Wiring/Weight-Balance Space (Mirrors core architectural configuration)
+        translate([-leg_w/2 + wall, -body_d/2 + wall, wall])
+            cube([leg_w - 2*wall, body_d - wall - cover_thick, body_h - 2*wall]);
         
-        // Internal Feature Group C: LiPo Battery Guide Rails (Flush against Front Wall)
-        // Accommodates standard ~35mm wide flat lithium-polymer packs clear of mechanics
-        translate([-18.5, -17.5, 30]) cube([2.0, 8.5, 55]);
-        translate([-18.5, -9.0, 30])  cube([4.0, 1.5, 55]);
-        translate([16.5, -17.5, 30])  cube([2.0, 8.5, 55]);
-        translate([14.5, -9.0, 30])   cube([4.0, 1.5, 55]);
+        // Rear lip step offset recess frame for leg cover seating
+        translate([-lip_w/2, body_d/2 - cover_thick, wall]) 
+            cube([lip_w, cover_thick + 0.1, body_h - 2*wall]);
         
-        // Internal Feature Group D: Dual Molded SG90 Micro Servo Mounting Brackets
-        // Structural mounting collars integrated directly into internal side walls at Z=60
-        // Left Side Mounting Tabs
-        translate([-27.5, -6.1, 60 + 11.4]) cube([6.5, 12.2, 5.0]);
-        translate([-27.5, -6.1, 60 - 11.4 - 5.0]) cube([6.5, 12.2, 5.0]);
-        // Right Side Mounting Tabs
-        translate([21.0, -6.1, 60 + 11.4]) cube([6.5, 12.2, 5.0]);
-        translate([21.0, -6.1, 60 - 11.4 - 5.0]) cube([6.5, 12.2, 5.0]);
-    }
-    
-    // =====================================================================
-    // 2. NEGATIVE SPACE SUBTRACTIONS (CUTOUTS & ENGRAVINGS)
-    // =====================================================================
-    
-    // Open Main Internal Component Bay
-    translate([-int_w/2, -body_d/2 + wall, wall]) 
-        cube([int_w, int_d + 0.1, int_h]);
-    
-    // Rear Cover Interface Lip Step (Allows backplate to sit perfectly flush)
-    translate([-lip_w/2, body_d/2 - cover_thick, 1.5]) 
-        cube([lip_w, cover_thick + 0.1, body_h - 3]);
-    
-    // Zero-Footprint Snap Rim-Detent Pockets for Cover Retention
-    for (z_pos = [25, 95]) {
-        translate([-lip_w/2 - 0.3, body_d/2 - cover_thick/2, z_pos]) 
-            cube([0.8, 4.4, 1.2], center=true);
-        translate([lip_w/2 + 0.3, body_d/2 - cover_thick/2, z_pos]) 
-            cube([0.8, 4.4, 1.2], center=true);
-    }
-    
-    // Front Face 0.96" OLED Screen Bezel Opening
-    translate([-22.4/2, -body_d/2 - 0.1, 98]) 
-        cube([22.4, wall + 0.2, 11.5]);
-    
-    // Integrated Side Entry Port for Type-C USB Charging Breakout Module
-    translate([-body_w/2 - 0.1, -5.0, 12.0]) 
-        cube([wall + 0.2, 10.0, 5.5]);
-    
-    // Stepped Pass-Holes for SG90 Servo Spline Protrusion (Centered at Z=60)
-    // Left Side Spline Access
-    translate([-30.1, 0, 60]) rotate([0, 90, 0]) cylinder(r=3.75, h=5); 
-    translate([-27.6, 0, 60]) rotate([0, 90, 0]) cylinder(r=6.2, h=2.1); // Collar recess 
-    // Right Side Spline Access
-    translate([25.1, 0, 60])  rotate([0, 90, 0]) cylinder(r=3.75, h=5);  
-    translate([25.5, 0, 60])  rotate([0, 90, 0]) cylinder(r=6.2, h=2.1); // Collar recess
-    
-    // Pre-molded Pilot Holes for Servo Flange Ears (Fits M2 mounting screws)
-    translate([-24.0, 0, 60 + 13.9]) rotate([0, 90, 0]) cylinder(r=0.9, h=10, center=true);
-    translate([-24.0, 0, 60 - 13.9]) rotate([0, 90, 0]) cylinder(r=0.9, h=10, center=true);
-    translate([24.0, 0, 60 + 13.9])  rotate([0, 90, 0]) cylinder(r=0.9, h=10, center=true);
-    translate([24.0, 0, 60 - 13.9])  rotate([0, 90, 0]) cylinder(r=0.9, h=10, center=true);
-    
-    // Screen-Accurate VERTICAL TARS Typography
-    // Positioned exactly 5mm below the OLED bezel window on the front-left quadrant,
-    // oriented vertically (rotated 90 degrees anticlockwise from horizontal), and engraved 0.5mm deep.
-    translate([-body_w/2 + 6.5, -body_d/2 + 0.5, 93]) 
-        rotate([90, 0, 90]) 
-        linear_extrude(height = 0.6) 
-        text("TARS", font = "Liberation Sans:style=Bold", size = 6.0, halign = "right", valign = "bottom");
-    
-    // Authentic Tactical Horizontal Detail Panel Lines (Coordinated with Leg heights)
-    for (z_line = [30, 60, 90]) {
-        translate([-body_w/2 - 1, -body_d/2 - 0.1, z_line - 0.3])
-            cube([body_w + 2, 0.6, 0.6]);
-    }
-    
-    // Technical Indexing Scale Calibration Ticks (Centered along the rotational pivot layout)
-    for (x_tick = [-20, -10, 0, 10, 20]) {
-        translate([x_tick - 0.3, -body_d/2 - 0.1, 60 - 3])
-            cube([0.6, 0.6, 6]);
+        // Rim-Detent Pockets mapped to internal wall layout
+        for (z_pos = [20, 50, 85, 110]) {
+            translate([-lip_w/2 - 0.2, body_d/2 - cover_thick/2, z_pos]) cube([0.6, 4.0, 1.2], center=true);
+            translate([lip_w/2 + 0.2, body_d/2 - cover_thick/2, z_pos]) cube([0.6, 4.0, 1.2], center=true);
+        }
+        
+        // Blind Inner Axle Drive Connection Hole (Receives micro servo horn linkage)
+        if (side == "left") {
+            translate([leg_w/2 + 0.6, 0, pivot_z]) rotate([0, -90, 0]) cylinder(r=3.5, h=8.0);
+        } else if (side == "right") {
+            translate([-leg_w/2 - 0.6, 0, pivot_z]) rotate([0, 90, 0]) cylinder(r=3.5, h=8.0);
+        }
+        
+        // Coordinated Tactical Front Horizontal Detail Panel Grooves
+        for (z_line = [30, 60, 90]) {
+            translate([-leg_w/2 - 1, -body_d/2 - 0.1, z_line - 0.3]) cube([leg_w + 2, 0.6, 0.6]);
+        }
     }
 }
