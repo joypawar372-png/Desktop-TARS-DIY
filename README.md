@@ -296,3 +296,5 @@ module leg_locking_cover() {
         translate([w/2 - 1.4, -h/2 + 95 - 2.5, cover_thick]) stubby_detent_lug("right");
     }
 }
+<img width="416" height="555" alt="images" src="https://github.com/user-attachments/assets/f3e853f6-c21b-484c-a28f-8f6542b22210" />
+Only the Paranoid Survive
