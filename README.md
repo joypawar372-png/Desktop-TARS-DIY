@@ -25,6 +25,7 @@ Fasteners (16x): M2 x 5mm Self-Tapping Screws (for mounting components to intern
 Wiring (1x Set): Flexible silicone-insulated jumper wires (26-30 AWG recommended).
 
 ---
+<img width="416" height="555" alt="images" src="https://github.com/user-attachments/assets/f3e853f6-c21b-484c-a28f-8f6542b22210" />
 
 ## 🗂️ Distributed Payload Design (Space Optimization)
 
@@ -32,7 +33,7 @@ Rather than stuffing all electronics into the center body—which would cause se
 
 ```text
 
-<img width="416" height="555" alt="images" src="https://github.com/user-attachments/assets/f3e853f6-c21b-484c-a28f-8f6542b22210" />
+
 +────────────────────────+────────────────────────+────────────────────────+
 |   SLAB 1: LEFT LEG     |  SLAB 2: CENTER BODY   |   SLAB 3: RIGHT LEG    |
 |       (26 mm Wide)     |      (44 mm Wide)      |      (26 mm Wide)      |
