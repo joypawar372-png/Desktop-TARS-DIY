@@ -31,6 +31,8 @@ Wiring (1x Set): Flexible silicone-insulated jumper wires (26-30 AWG recommended
 Rather than stuffing all electronics into the center body—which would cause severe component collisions—components and weight are strategically distributed across all three moving slabs:
 
 ```text
+
+<img width="416" height="555" alt="images" src="https://github.com/user-attachments/assets/f3e853f6-c21b-484c-a28f-8f6542b22210" />
 +────────────────────────+────────────────────────+────────────────────────+
 |   SLAB 1: LEFT LEG     |  SLAB 2: CENTER BODY   |   SLAB 3: RIGHT LEG    |
 |       (26 mm Wide)     |      (44 mm Wide)      |      (26 mm Wide)      |
@@ -43,6 +45,7 @@ Rather than stuffing all electronics into the center body—which would cause se
 |  (Mounted Vertically)  |        +               |  [TP4056 Charger]      |
 |                        |  [Mic & Mini Speaker]  |                        |
 +────────────────────────+────────────────────────+────────────────────────+
+
 
 SCAD CODE
 
