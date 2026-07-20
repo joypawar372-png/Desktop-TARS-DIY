@@ -1,0 +1,298 @@
+#include <WiFi.h>
+#include <WebServer.h>
+#include <Wire.h>
+#include <Adafruit_GFX.h>
+#include <Adafruit_SSD1306.h>
+#include <ESP32Servo.h>
+
+// --- Configuration Constants ---
+#define SCREEN_WIDTH 128
+#define SCREEN_HEIGHT 64
+#define OLED_RESET    -1
+#define SCREEN_ADDRESS 0x3C
+
+#define SERVO_LEFT_PIN   18
+#define SERVO_RIGHT_PIN  19
+
+// --- Your Hardcoded Wi-Fi Credentials ---
+const char* WIFI_SSID     = "Aashi pawar";
+const char* WIFI_PASSWORD = "8221946003";
+
+// --- Calibration & Trim Parameters ---
+int leftOffset = 90;        
+int rightOffset = 90;       
+
+// --- Real-Time Joystick Vector Inputs (-100 to 100) ---
+int joystickX = 0; // Steering / Turn bias (-100 Left, 100 Right)
+int joystickY = 0; // Speed / Forward-Reverse (-100 Back, 100 Forward)
+
+// --- Hardware Instantiation ---
+Adafruit_SSD1306 display(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, OLED_RESET);
+Servo servoLeft;
+Servo servoRight;
+WebServer server(80);
+
+// Smooth Gait Engine Variables
+unsigned long lastStepTime = 0;
+int gaitStepState = 0;
+const unsigned long baseGaitInterval = 350; // Base interval for movement pacing
+
+// --- Mobile Web Control Interface (Proportional Vector Joystick) ---
+const char HTML_INTERFACE[] PROGMEM = R"rawliteral(
+<!DOCTYPE html>
+<html>
+<head>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>TARS Vector Control</title>
+    <style>
+        body { font-family: -apple-system, sans-serif; background: #121212; color: #E0E0E0; text-align: center; margin: 0; padding: 15px; }
+        h1 { font-size: 24px; letter-spacing: 3px; color: #FFF; margin-bottom: 2px; }
+        .subtitle { color: #888; font-size: 12px; margin-bottom: 20px; }
+        .card { background: #1E1E1E; border-radius: 12px; padding: 15px; margin-bottom: 15px; box-shadow: 0 4px 10px rgba(0,0,0,0.3); text-align: left; }
+        .card h3 { text-align: center; margin-top: 0; color: #007AFF; font-size: 15px; letter-spacing: 1px; }
+        
+        /* Proportional Joystick Container */
+        #joystick-container { position: relative; width: 180px; height: 180px; background: #2A2A2A; border-radius: 50%; margin: 10px auto; touch-action: none; border: 2px solid #444; }
+        #stick { position: absolute; width: 70px; height: 70px; background: #007AFF; border-radius: 50%; top: 55px; left: 55px; box-shadow: 0 4px 8px rgba(0,0,0,0.4); transition: transform 0.02s linear; }
+        
+        .btn { background: #FF3B30; color: white; border: none; padding: 12px 20px; font-size: 14px; border-radius: 8px; cursor: pointer; width: 100%; font-weight: bold; }
+        
+        .slider-container { margin: 12px 0; }
+        label { font-weight: bold; font-size: 12px; color: #AAA; display: block; margin-bottom: 4px; }
+        .slider { -webkit-appearance: none; width: 100%; height: 10px; border-radius: 5px; background: #333; outline: none; }
+        .slider::-webkit-slider-thumb { -webkit-appearance: none; width: 22px; height: 22px; border-radius: 50%; background: #007AFF; cursor: pointer; }
+        .value-display { float: right; color: #007AFF; font-weight: bold; }
+    </style>
+</head>
+<body>
+    <h1>TARS</h1>
+    <div class="subtitle">PROPORTIONAL VECTOR STEERING</div>
+
+    <div class="card" style="text-align: center;">
+        <h3>SMOOTH JOYSTICK</h3>
+        <div id="joystick-container">
+            <div id="stick"></div>
+        </div>
+        <button class="btn" onclick="resetJoystick()">CENTER / STOP</button>
+    </div>
+
+    <div class="card">
+        <h3>SERVO TRIM OFFSETS</h3>
+        <div class="slider-container">
+            <label>LEFT TRIM OFFSET <span id="leftVal" class="value-display">90&deg;</span></label>
+            <input type="range" min="70" max="110" value="90" class="slider" id="leftSlider" onchange="updateConfig()">
+        </div>
+        <div class="slider-container">
+            <label>RIGHT TRIM OFFSET <span id="rightVal" class="value-display">90&deg;</span></label>
+            <input type="range" min="70" max="110" value="90" class="slider" id="rightSlider" onchange="updateConfig()">
+        </div>
+    </div>
+
+    <script>
+        const container = document.getElementById('joystick-container');
+        const stick = document.getElementById('stick');
+        let active = false;
+        let lastX = 0, lastY = 0;
+
+        function sendVector(x, y) {
+            // Only send update if values shifted noticeably to optimize network traffic
+            if (Math.abs(x - lastX) < 2 && Math.abs(y - lastY) < 2) return;
+            lastX = x; lastY = y;
+            fetch(`/vector?x=${x}&y=${y}`);
+        }
+
+        function resetJoystick() {
+            stick.style.transform = `translate(0px, 0px)`;
+            lastX = 0; lastY = 0;
+            fetch('/vector?x=0&y=0');
+        }
+
+        function updateConfig() {
+            let l_off = document.getElementById('leftSlider').value;
+            let r_off = document.getElementById('rightSlider').value;
+            document.getElementById('leftVal').innerText = l_off + '°';
+            document.getElementById('rightVal').innerText = r_off + '°';
+            fetch(`/config?l_off=${l_off}&r_off=${r_off}`);
+        }
+
+        function handleMove(clientX, clientY) {
+            const rect = container.getBoundingClientRect();
+            let dx = clientX - rect.left - 90;
+            let dy = clientY - rect.top - 90;
+            let dist = Math.sqrt(dx * dx + dy * dy);
+            let maxDist = 55;
+
+            if (dist > maxDist) {
+                dx = (dx / dist) * maxDist;
+                dy = (dy / dist) * maxDist;
+            }
+
+            stick.style.transform = `translate(${dx}px, ${dy}px)`;
+
+            // Normalize coordinates from -100 to 100
+            let normX = Math.round((dx / maxDist) * 100);
+            let normY = Math.round((-dy / maxDist) * 100); // Invert Y so up is positive forward
+            sendVector(normX, normY);
+        }
+
+        container.addEventListener('pointerdown', (e) => { active = true; handleMove(e.clientX, e.clientY); });
+        window.addEventListener('pointermove', (e) => { if (active) handleMove(e.clientX, e.clientY); });
+        window.addEventListener('pointerup', () => {
+            if (!active) return;
+            active = false;
+            stick.style.transform = `translate(0px, 0px)`;
+            resetJoystick();
+        });
+    </script>
+</body>
+</html>
+)rawliteral";
+
+// --- OLED Screen Update Helper ---
+void updateDisplay(const char* statusText, const char* detailText) {
+    display.clearDisplay();
+    display.setTextColor(SSD1306_WHITE);
+    
+    display.setTextSize(2);
+    display.setCursor(8, 8);
+    display.print("TARS VECTOR");
+    
+    display.setTextSize(1);
+    display.setCursor(8, 38);
+    display.print(statusText);
+    display.setCursor(8, 50);
+    display.print(detailText);
+    
+    display.display();
+}
+
+// --- Web Server Request Handlers ---
+void handleRoot() {
+    server.send(200, "text/html", HTML_INTERFACE);
+}
+
+void handleVector() {
+    if (server.hasArg("x") && server.hasArg("y")) {
+        joystickX = server.arg("x").toInt();
+        joystickY = server.arg("y").toInt();
+
+        if (joystickX == 0 && joystickY == 0) {
+            servoLeft.write(leftOffset);
+            servoRight.write(rightOffset);
+            updateDisplay("STATUS: IDLE", "STABLE HOMED");
+        }
+        server.send(200, "text/plain", "OK");
+    } else {
+        server.send(400, "text/plain", "Bad Request");
+    }
+}
+
+void handleConfig() {
+    if (server.hasArg("l_off") && server.hasArg("r_off")) {
+        leftOffset = server.arg("l_off").toInt();
+        rightOffset = server.arg("r_off").toInt();
+
+        if (joystickX == 0 && joystickY == 0) {
+            servoLeft.write(leftOffset);
+            servoRight.write(rightOffset);
+        }
+        server.send(200, "text/plain", "OK");
+    } else {
+        server.send(400, "text/plain", "Bad Request");
+    }
+}
+
+// --- Smooth Differential Mixing Gait Engine ---
+void executeProportionalGait() {
+    if (joystickX == 0 && joystickY == 0) return;
+
+    unsigned long currentMillis = millis();
+    // Dynamic speed scaling: higher joystick Y magnitude increases step pace slightly, lower scales it down
+    unsigned long currentInterval = baseGaitInterval; 
+
+    if (currentMillis - lastStepTime >= currentInterval) {
+        lastStepTime = currentMillis;
+
+        // Calculate dynamic amplitude proportional to joystick Y push (capped between 2 and 6 degrees)
+        int dynamicAmplitude = map(abs(joystickY), 0, 100, 2, 6);
+        
+        // Calculate differential turning bias from joystick X push
+        // Positive X turns right (adds to right, subtracts from left or vice versa)
+        int turnBias = map(joystickX, -100, 100, -3, 3);
+
+        int targetLeft, targetRight;
+
+        if (joystickY >= 0) { // Forward movement range
+            if (gaitStepState == 0) {
+                targetLeft  = leftOffset + dynamicAmplitude + turnBias;
+                targetRight = rightOffset - dynamicAmplitude + turnBias;
+                gaitStepState = 1;
+            } else {
+                targetLeft  = leftOffset - dynamicAmplitude + turnBias;
+                targetRight = rightOffset + dynamicAmplitude + turnBias;
+                gaitStepState = 0;
+            }
+            updateDisplay("MOVING: FWD", "PROPORTIONAL MIX");
+        } else { // Backward movement range
+            if (gaitStepState == 0) {
+                targetLeft  = leftOffset - dynamicAmplitude + turnBias;
+                targetRight = rightOffset + dynamicAmplitude + turnBias;
+                gaitStepState = 1;
+            } else {
+                targetLeft  = leftOffset + dynamicAmplitude + turnBias;
+                targetRight = rightOffset - dynamicAmplitude + turnBias;
+                gaitStepState = 0;
+            }
+            updateDisplay("MOVING: REV", "PROPORTIONAL MIX");
+        }
+
+        // Apply smooth angles safely
+        servoLeft.write(constrain(targetLeft, 60, 120));
+        servoRight.write(constrain(targetRight, 60, 120));
+    }
+}
+
+void setup() {
+    Serial.begin(115200);
+
+    // Initialize OLED Display
+    if(!display.begin(SSD1306_SWITCHCAPVCC, SCREEN_ADDRESS)) {
+        Serial.println("OLED init failed");
+        for(;;);
+    }
+    updateDisplay("BOOTING", "CONNECTING WIFI");
+
+    // Initialize Servos to Trim Offsets
+    servoLeft.attach(SERVO_LEFT_PIN);
+    servoRight.attach(SERVO_RIGHT_PIN);
+    servoLeft.write(leftOffset);
+    servoRight.write(rightOffset);
+
+    // Connect to Wi-Fi
+    WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
+    int attempts = 0;
+    while (WiFi.status() != WL_CONNECTED) {
+        delay(500);
+        Serial.print(".");
+        attempts++;
+        if (attempts > 30) {
+            updateDisplay("WIFI FAILED", "REBOOTING...");
+            delay(2000);
+            ESP.restart();
+        }
+    }
+
+    String ipMsg = WiFi.localIP().toString();
+    updateDisplay("ONLINE", ipMsg.c_str());
+
+    // Register Web Server Routes
+    server.on("/", handleRoot);
+    server.on("/vector", handleVector);
+    server.on("/config", handleConfig);
+    server.begin();
+}
+
+void loop() {
+    server.handleClient();     // Listen for live vector touch updates
+    executeProportionalGait(); // Execute continuous differential blending
+}
