@@ -16,8 +16,8 @@
 #define SERVO_RIGHT_PIN  19
 
 // --- Wi-Fi Credentials ---
-const char* WIFI_SSID     = "Aashi pawar";
-const char* WIFI_PASSWORD = "8221946003";
+const char* WIFI_SSID     = "";
+const char* WIFI_PASSWORD = "";
 
 // --- Servo Trim & Physics Parameters ---
 float leftOffset    = 90.0;        
