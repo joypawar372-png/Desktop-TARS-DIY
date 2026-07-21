@@ -4,6 +4,7 @@
 #include <Adafruit_GFX.h>
 #include <Adafruit_SSD1306.h>
 #include <ESP32Servo.h>
+#include <math.h>
 
 // --- Configuration Constants ---
 #define SCREEN_WIDTH 128
@@ -14,17 +15,32 @@
 #define SERVO_LEFT_PIN   18
 #define SERVO_RIGHT_PIN  19
 
-// --- Your Hardcoded Wi-Fi Credentials ---
+// --- Wi-Fi Credentials ---
 const char* WIFI_SSID     = "Aashi pawar";
 const char* WIFI_PASSWORD = "8221946003";
 
-// --- Calibration & Trim Parameters ---
-int leftOffset = 90;        
-int rightOffset = 90;       
+// --- Servo Trim & Physics Parameters ---
+float leftOffset    = 90.0;        
+float rightOffset   = 90.0;       
+float maxAmplitude  = 18.0;   // Step swing angle (degrees)
+float gaitFreq      = 1.8;    // Frequency in Hz (cycles per second)
+float phaseShift    = 135.0;  // Phase difference between legs in degrees (CRITICAL FOR ROCKING)
+float leanBias      = 12.0;   // Forward/Reverse shift angle
+float smoothness    = 0.12;   // Input LERP filter factor (0.01 = silky/slow, 0.5 = aggressive)
 
-// --- Real-Time Joystick Vector Inputs (-100 to 100) ---
-int joystickX = 0; // Steering / Turn bias (-100 Left, 100 Right)
-int joystickY = 0; // Speed / Forward-Reverse (-100 Back, 100 Forward)
+String customMessage = "TARS SINE OS"; 
+
+// --- Input Vector & Filtering States ---
+float targetX = 0.0, targetY = 0.0;
+float currentX = 0.0, currentY = 0.0;
+
+// --- Current Output Servo Angles ---
+float currentLeftAngle = 90.0;
+float currentRightAngle = 90.0;
+
+// --- Timing & Gait Engine State ---
+unsigned long lastLoopTime = 0;
+float phaseAngle = 0.0; // Current cycle phase in radians
 
 // --- Hardware Instantiation ---
 Adafruit_SSD1306 display(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, OLED_RESET);
@@ -32,70 +48,101 @@ Servo servoLeft;
 Servo servoRight;
 WebServer server(80);
 
-// Smooth Gait Engine Variables
-unsigned long lastStepTime = 0;
-int gaitStepState = 0;
-const unsigned long baseGaitInterval = 350; // Base interval for movement pacing
-
-// --- Mobile Web Control Interface (Proportional Vector Joystick) ---
+// --- Mobile Web Interface (HTML/CSS/JS) ---
 const char HTML_INTERFACE[] PROGMEM = R"rawliteral(
 <!DOCTYPE html>
 <html>
 <head>
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>TARS Vector Control</title>
+    <title>TARS Harmonic Controller</title>
     <style>
-        body { font-family: -apple-system, sans-serif; background: #121212; color: #E0E0E0; text-align: center; margin: 0; padding: 15px; }
-        h1 { font-size: 24px; letter-spacing: 3px; color: #FFF; margin-bottom: 2px; }
-        .subtitle { color: #888; font-size: 12px; margin-bottom: 20px; }
-        .card { background: #1E1E1E; border-radius: 12px; padding: 15px; margin-bottom: 15px; box-shadow: 0 4px 10px rgba(0,0,0,0.3); text-align: left; }
-        .card h3 { text-align: center; margin-top: 0; color: #007AFF; font-size: 15px; letter-spacing: 1px; }
+        body { font-family: -apple-system, sans-serif; background: #121212; color: #E0E0E0; text-align: center; margin: 0; padding: 12px; }
+        h1 { font-size: 22px; letter-spacing: 3px; color: #FFF; margin-bottom: 2px; }
+        .subtitle { color: #888; font-size: 11px; margin-bottom: 12px; }
+        .card { background: #1E1E1E; border-radius: 12px; padding: 12px; margin-bottom: 12px; box-shadow: 0 4px 10px rgba(0,0,0,0.3); text-align: left; }
+        .card h3 { text-align: center; margin-top: 0; color: #007AFF; font-size: 14px; letter-spacing: 1px; }
         
-        /* Proportional Joystick Container */
-        #joystick-container { position: relative; width: 180px; height: 180px; background: #2A2A2A; border-radius: 50%; margin: 10px auto; touch-action: none; border: 2px solid #444; }
-        #stick { position: absolute; width: 70px; height: 70px; background: #007AFF; border-radius: 50%; top: 55px; left: 55px; box-shadow: 0 4px 8px rgba(0,0,0,0.4); transition: transform 0.02s linear; }
+        #joystick-container { position: relative; width: 170px; height: 170px; background: #2A2A2A; border-radius: 50%; margin: 8px auto; touch-action: none; border: 2px solid #444; }
+        #stick { position: absolute; width: 60px; height: 60px; background: #007AFF; border-radius: 50%; top: 55px; left: 55px; box-shadow: 0 4px 8px rgba(0,0,0,0.4); }
         
-        .btn { background: #FF3B30; color: white; border: none; padding: 12px 20px; font-size: 14px; border-radius: 8px; cursor: pointer; width: 100%; font-weight: bold; }
+        .btn { background: #FF3B30; color: white; border: none; padding: 10px; font-size: 13px; border-radius: 8px; cursor: pointer; width: 100%; font-weight: bold; margin-top: 8px;}
+        .btn-blue { background: #007AFF; margin-top: 6px;}
         
-        .slider-container { margin: 12px 0; }
-        label { font-weight: bold; font-size: 12px; color: #AAA; display: block; margin-bottom: 4px; }
-        .slider { -webkit-appearance: none; width: 100%; height: 10px; border-radius: 5px; background: #333; outline: none; }
-        .slider::-webkit-slider-thumb { -webkit-appearance: none; width: 22px; height: 22px; border-radius: 50%; background: #007AFF; cursor: pointer; }
+        .slider-container { margin: 10px 0; }
+        label { font-weight: bold; font-size: 11px; color: #AAA; display: block; margin-bottom: 3px; }
+        .slider { -webkit-appearance: none; width: 100%; height: 8px; border-radius: 4px; background: #333; outline: none; }
+        .slider::-webkit-slider-thumb { -webkit-appearance: none; width: 20px; height: 20px; border-radius: 50%; background: #007AFF; cursor: pointer; }
+        .slider-highlight::-webkit-slider-thumb { background: #30D158; }
         .value-display { float: right; color: #007AFF; font-weight: bold; }
+        
+        input[type="text"] { width: 100%; padding: 8px; box-sizing: border-box; background: #222; color: #00FF00; border: 1px solid #444; border-radius: 6px; font-family: monospace; font-size: 14px; text-transform: uppercase; text-align: center; }
     </style>
 </head>
 <body>
     <h1>TARS</h1>
-    <div class="subtitle">PROPORTIONAL VECTOR STEERING</div>
+    <div class="subtitle">SINUSOIDAL KINEMATICS ENGINE</div>
+
+    <div class="card" style="text-align: center;">
+        <h3>OLED TELEMETRY</h3>
+        <input type="text" id="screenText" maxlength="12" placeholder="CUSTOM MESSAGE" value="TARS SINE OS">
+        <button class="btn btn-blue" onclick="updateScreen()">UPDATE SCREEN</button>
+    </div>
 
     <div class="card" style="text-align: center;">
         <h3>SMOOTH JOYSTICK</h3>
         <div id="joystick-container">
             <div id="stick"></div>
         </div>
-        <button class="btn" onclick="resetJoystick()">CENTER / STOP</button>
+        <button class="btn" onclick="resetJoystick()">EMERGENCY STOP</button>
     </div>
 
     <div class="card">
-        <h3>SERVO TRIM OFFSETS</h3>
+        <h3>HARMONIC GAIT TUNER</h3>
         <div class="slider-container">
-            <label>LEFT TRIM OFFSET <span id="leftVal" class="value-display">90&deg;</span></label>
-            <input type="range" min="70" max="110" value="90" class="slider" id="leftSlider" onchange="updateConfig()">
+            <label>PHASE SHIFT (&phi; ROCKING) <span id="phaseVal" class="value-display">135&deg;</span></label>
+            <input type="range" min="0" max="360" value="135" class="slider slider-highlight" id="phaseSlider" oninput="updateConfig()">
         </div>
         <div class="slider-container">
-            <label>RIGHT TRIM OFFSET <span id="rightVal" class="value-display">90&deg;</span></label>
-            <input type="range" min="70" max="110" value="90" class="slider" id="rightSlider" onchange="updateConfig()">
+            <label>STEP FREQUENCY (SPEED) <span id="freqVal" class="value-display">1.8Hz</span></label>
+            <input type="range" min="0.5" max="4.0" step="0.1" value="1.8" class="slider" id="freqSlider" oninput="updateConfig()">
+        </div>
+        <div class="slider-container">
+            <label>MAX AMPLITUDE (STRIDE) <span id="ampVal" class="value-display">18&deg;</span></label>
+            <input type="range" min="2" max="35" value="18" class="slider" id="ampSlider" oninput="updateConfig()">
+        </div>
+        <div class="slider-container">
+            <label>LEAN BIAS (C.o.G. SHIFT) <span id="leanVal" class="value-display">12&deg;</span></label>
+            <input type="range" min="0" max="30" value="12" class="slider" id="leanSlider" oninput="updateConfig()">
+        </div>
+        <div class="slider-container">
+            <label>SMOOTHING FILTER (LERP) <span id="smoothVal" class="value-display">0.12</span></label>
+            <input type="range" min="0.02" max="0.50" step="0.01" value="0.12" class="slider" id="smoothSlider" oninput="updateConfig()">
+        </div>
+    </div>
+
+    <div class="card">
+        <h3>SERVO ZERO TRIM</h3>
+        <div class="slider-container">
+            <label>LEFT TRIM <span id="leftVal" class="value-display">90&deg;</span></label>
+            <input type="range" min="50" max="130" value="90" class="slider" id="leftSlider" oninput="updateConfig()">
+        </div>
+        <div class="slider-container">
+            <label>RIGHT TRIM <span id="rightVal" class="value-display">90&deg;</span></label>
+            <input type="range" min="50" max="130" value="90" class="slider" id="rightSlider" oninput="updateConfig()">
         </div>
     </div>
 
     <script>
         const container = document.getElementById('joystick-container');
         const stick = document.getElementById('stick');
-        let active = false;
-        let lastX = 0, lastY = 0;
+        let active = false, lastX = 0, lastY = 0;
+
+        function updateScreen() {
+            let msg = document.getElementById('screenText').value;
+            fetch('/text?msg=' + encodeURIComponent(msg));
+        }
 
         function sendVector(x, y) {
-            // Only send update if values shifted noticeably to optimize network traffic
             if (Math.abs(x - lastX) < 2 && Math.abs(y - lastY) < 2) return;
             lastX = x; lastY = y;
             fetch(`/vector?x=${x}&y=${y}`);
@@ -108,17 +155,29 @@ const char HTML_INTERFACE[] PROGMEM = R"rawliteral(
         }
 
         function updateConfig() {
+            let phase = document.getElementById('phaseSlider').value;
+            let freq = document.getElementById('freqSlider').value;
+            let amp = document.getElementById('ampSlider').value;
+            let lean = document.getElementById('leanSlider').value;
+            let sm = document.getElementById('smoothSlider').value;
             let l_off = document.getElementById('leftSlider').value;
             let r_off = document.getElementById('rightSlider').value;
+            
+            document.getElementById('phaseVal').innerText = phase + '°';
+            document.getElementById('freqVal').innerText = freq + 'Hz';
+            document.getElementById('ampVal').innerText = amp + '°';
+            document.getElementById('leanVal').innerText = lean + '°';
+            document.getElementById('smoothVal').innerText = sm;
             document.getElementById('leftVal').innerText = l_off + '°';
             document.getElementById('rightVal').innerText = r_off + '°';
-            fetch(`/config?l_off=${l_off}&r_off=${r_off}`);
+            
+            fetch(`/config?phase=${phase}&freq=${freq}&amp=${amp}&lean=${lean}&sm=${sm}&l_off=${l_off}&r_off=${r_off}`);
         }
 
         function handleMove(clientX, clientY) {
             const rect = container.getBoundingClientRect();
-            let dx = clientX - rect.left - 90;
-            let dy = clientY - rect.top - 90;
+            let dx = clientX - rect.left - 85;
+            let dy = clientY - rect.top - 85;
             let dist = Math.sqrt(dx * dx + dy * dy);
             let maxDist = 55;
 
@@ -129,127 +188,145 @@ const char HTML_INTERFACE[] PROGMEM = R"rawliteral(
 
             stick.style.transform = `translate(${dx}px, ${dy}px)`;
 
-            // Normalize coordinates from -100 to 100
             let normX = Math.round((dx / maxDist) * 100);
-            let normY = Math.round((-dy / maxDist) * 100); // Invert Y so up is positive forward
+            let normY = Math.round((-dy / maxDist) * 100); 
+            
+            if(Math.abs(normX) < 8 && Math.abs(normY) < 8) { normX = 0; normY = 0; }
             sendVector(normX, normY);
         }
 
         container.addEventListener('pointerdown', (e) => { active = true; handleMove(e.clientX, e.clientY); });
         window.addEventListener('pointermove', (e) => { if (active) handleMove(e.clientX, e.clientY); });
-        window.addEventListener('pointerup', () => {
-            if (!active) return;
-            active = false;
-            stick.style.transform = `translate(0px, 0px)`;
-            resetJoystick();
-        });
+        window.addEventListener('pointerup', () => { if (active) { active = false; stick.style.transform = `translate(0px, 0px)`; resetJoystick(); } });
     </script>
 </body>
 </html>
 )rawliteral";
 
-// --- OLED Screen Update Helper ---
-void updateDisplay(const char* statusText, const char* detailText) {
+// --- OLED Screen Helper ---
+void updateDisplay(String statusText) {
     display.clearDisplay();
     display.setTextColor(SSD1306_WHITE);
     
+    display.setTextSize(1);
+    display.setCursor(0, 0);
+    display.print("SINE GAIT KINEMATICS");
+    display.drawLine(0, 10, 128, 10, SSD1306_WHITE);
+    
     display.setTextSize(2);
-    display.setCursor(8, 8);
-    display.print("TARS VECTOR");
+    display.setCursor(0, 22);
+    display.print(customMessage);
     
     display.setTextSize(1);
-    display.setCursor(8, 38);
+    display.setCursor(0, 52);
+    display.print("STATUS: ");
     display.print(statusText);
-    display.setCursor(8, 50);
-    display.print(detailText);
     
     display.display();
 }
 
-// --- Web Server Request Handlers ---
-void handleRoot() {
-    server.send(200, "text/html", HTML_INTERFACE);
-}
+// --- Web Handlers ---
+void handleRoot() { server.send(200, "text/html", HTML_INTERFACE); }
 
 void handleVector() {
     if (server.hasArg("x") && server.hasArg("y")) {
-        joystickX = server.arg("x").toInt();
-        joystickY = server.arg("y").toInt();
-
-        if (joystickX == 0 && joystickY == 0) {
-            servoLeft.write(leftOffset);
-            servoRight.write(rightOffset);
-            updateDisplay("STATUS: IDLE", "STABLE HOMED");
-        }
+        targetX = server.arg("x").toFloat();
+        targetY = server.arg("y").toFloat();
         server.send(200, "text/plain", "OK");
-    } else {
-        server.send(400, "text/plain", "Bad Request");
     }
 }
 
 void handleConfig() {
-    if (server.hasArg("l_off") && server.hasArg("r_off")) {
-        leftOffset = server.arg("l_off").toInt();
-        rightOffset = server.arg("r_off").toInt();
+    if (server.hasArg("phase")) phaseShift = server.arg("phase").toFloat();
+    if (server.hasArg("freq"))  gaitFreq   = server.arg("freq").toFloat();
+    if (server.hasArg("amp"))   maxAmplitude = server.arg("amp").toFloat();
+    if (server.hasArg("lean"))  leanBias   = server.arg("lean").toFloat();
+    if (server.hasArg("sm"))    smoothness = server.arg("sm").toFloat();
+    if (server.hasArg("l_off")) leftOffset = server.arg("l_off").toFloat();
+    if (server.hasArg("r_off")) rightOffset = server.arg("r_off").toFloat();
+    
+    server.send(200, "text/plain", "OK");
+}
 
-        if (joystickX == 0 && joystickY == 0) {
-            servoLeft.write(leftOffset);
-            servoRight.write(rightOffset);
-        }
+void handleText() {
+    if (server.hasArg("msg")) {
+        customMessage = server.arg("msg");
+        customMessage.toUpperCase();
+        updateDisplay("TEXT UPDATED");
         server.send(200, "text/plain", "OK");
-    } else {
-        server.send(400, "text/plain", "Bad Request");
     }
 }
 
-// --- Smooth Differential Mixing Gait Engine ---
-void executeProportionalGait() {
-    if (joystickX == 0 && joystickY == 0) return;
-
+// --- Smooth Harmonic Gait Engine (50Hz Loop) ---
+void updateHarmonicGait() {
     unsigned long currentMillis = millis();
-    // Dynamic speed scaling: higher joystick Y magnitude increases step pace slightly, lower scales it down
-    unsigned long currentInterval = baseGaitInterval; 
+    float dt = (currentMillis - lastLoopTime) / 1000.0;
+    
+    // Maintain strict 20ms execution cycle (50 Hz)
+    if (dt < 0.02) return; 
+    lastLoopTime = currentMillis;
 
-    if (currentMillis - lastStepTime >= currentInterval) {
-        lastStepTime = currentMillis;
+    // 1. Exponential Moving Average (Lerp Filter) for Joystick Input
+    // Completely removes jerks when abruptly releasing or flicking the joystick
+    currentX += (targetX - currentX) * smoothness;
+    currentY += (targetY - currentY) * smoothness;
 
-        // Calculate dynamic amplitude proportional to joystick Y push (capped between 2 and 6 degrees)
-        int dynamicAmplitude = map(abs(joystickY), 0, 100, 2, 6);
+    float magnitude = sqrt(currentX * currentX + currentY * currentY) / 100.0;
+
+    // 2. Idle State: Return smoothly to trim offsets
+    if (magnitude < 0.05) {
+        currentLeftAngle += (leftOffset - currentLeftAngle) * smoothness;
+        currentRightAngle += (rightOffset - currentRightAngle) * smoothness;
         
-        // Calculate differential turning bias from joystick X push
-        // Positive X turns right (adds to right, subtracts from left or vice versa)
-        int turnBias = map(joystickX, -100, 100, -3, 3);
-
-        int targetLeft, targetRight;
-
-        if (joystickY >= 0) { // Forward movement range
-            if (gaitStepState == 0) {
-                targetLeft  = leftOffset + dynamicAmplitude + turnBias;
-                targetRight = rightOffset - dynamicAmplitude + turnBias;
-                gaitStepState = 1;
-            } else {
-                targetLeft  = leftOffset - dynamicAmplitude + turnBias;
-                targetRight = rightOffset + dynamicAmplitude + turnBias;
-                gaitStepState = 0;
-            }
-            updateDisplay("MOVING: FWD", "PROPORTIONAL MIX");
-        } else { // Backward movement range
-            if (gaitStepState == 0) {
-                targetLeft  = leftOffset - dynamicAmplitude + turnBias;
-                targetRight = rightOffset + dynamicAmplitude + turnBias;
-                gaitStepState = 1;
-            } else {
-                targetLeft  = leftOffset + dynamicAmplitude + turnBias;
-                targetRight = rightOffset - dynamicAmplitude + turnBias;
-                gaitStepState = 0;
-            }
-            updateDisplay("MOVING: REV", "PROPORTIONAL MIX");
-        }
-
-        // Apply smooth angles safely
-        servoLeft.write(constrain(targetLeft, 60, 120));
-        servoRight.write(constrain(targetRight, 60, 120));
+        servoLeft.write((int)currentLeftAngle);
+        servoRight.write((int)currentRightAngle);
+        phaseAngle = 0.0; // Reset phase
+        return;
     }
+
+    // 3. Increment Phase Angle linearly over time
+    phaseAngle += 2.0 * M_PI * gaitFreq * dt;
+    if (phaseAngle >= 2.0 * M_PI) phaseAngle -= 2.0 * M_PI;
+
+    // 4. Calculate Differential Arcade Ratios
+    float v = currentY / 100.0; // Forward / Reverse (-1.0 to 1.0)
+    float w = currentX / 100.0; // Pivot / Turn (-1.0 to 1.0)
+
+    float leftGain  = v + w;
+    float rightGain = v - w;
+
+    // Normalize gains if they exceed 1.0
+    float maxGain = max(abs(leftGain), abs(rightGain));
+    if (maxGain > 1.0) {
+        leftGain /= maxGain;
+        rightGain /= maxGain;
+    }
+
+    // 5. Generate Continuous Sinusoidal Trajectories
+    float phaseRadShift = phaseShift * (M_PI / 180.0);
+    
+    float leftSine  = sin(phaseAngle);
+    float rightSine = sin(phaseAngle + phaseRadShift);
+
+    // Dynamic CoG Lean Bias (Lifts front/back depending on direction)
+    float dynamicLean = v * leanBias;
+
+    // Calculate final smooth angles
+    float targetLeftDeg  = leftOffset  + dynamicLean + (leftGain  * maxAmplitude * leftSine);
+    float targetRightDeg = rightOffset - dynamicLean - (rightGain * maxAmplitude * rightSine);
+
+    // Apply Lerp filtering to output angles for sub-degree smoothness
+    currentLeftAngle  += (targetLeftDeg  - currentLeftAngle)  * 0.4;
+    currentRightAngle += (targetRightDeg - currentRightAngle) * 0.4;
+
+    // Write directly to Servos (Constrained safely between 15 and 165 degrees)
+    servoLeft.write((int)constrain(currentLeftAngle, 15.0, 165.0));
+    servoRight.write((int)constrain(currentRightAngle, 15.0, 165.0));
+
+    // Update OLED state telemetry periodically
+    if (abs(currentX) > abs(currentY) + 20) updateDisplay("PIVOT TURN");
+    else if (currentY > 10) updateDisplay("SMOOTH WALK");
+    else if (currentY < -10) updateDisplay("SMOOTH REV");
 }
 
 void setup() {
@@ -260,39 +337,41 @@ void setup() {
         Serial.println("OLED init failed");
         for(;;);
     }
-    updateDisplay("BOOTING", "CONNECTING WIFI");
-
-    // Initialize Servos to Trim Offsets
-    servoLeft.attach(SERVO_LEFT_PIN);
-    servoRight.attach(SERVO_RIGHT_PIN);
-    servoLeft.write(leftOffset);
-    servoRight.write(rightOffset);
 
     // Connect to Wi-Fi
     WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
+    display.clearDisplay();
+    display.setTextColor(SSD1306_WHITE);
+    display.setTextSize(2);
+    display.setCursor(0, 20);
+    display.print("CONNECTING");
+    display.display();
+
     int attempts = 0;
     while (WiFi.status() != WL_CONNECTED) {
         delay(500);
-        Serial.print(".");
         attempts++;
-        if (attempts > 30) {
-            updateDisplay("WIFI FAILED", "REBOOTING...");
-            delay(2000);
-            ESP.restart();
-        }
+        if (attempts > 30) ESP.restart();
     }
 
-    String ipMsg = WiFi.localIP().toString();
-    updateDisplay("ONLINE", ipMsg.c_str());
+    customMessage = WiFi.localIP().toString();
+    updateDisplay("SYS ONLINE");
 
-    // Register Web Server Routes
+    // Initialize Servos
+    servoLeft.attach(SERVO_LEFT_PIN);
+    servoRight.attach(SERVO_RIGHT_PIN);
+    servoLeft.write((int)leftOffset);
+    servoRight.write((int)rightOffset);
+
+    // Register Server Routes
     server.on("/", handleRoot);
     server.on("/vector", handleVector);
     server.on("/config", handleConfig);
+    server.on("/text", handleText);
     server.begin();
 }
 
 void loop() {
-    server.handleClient();     // Listen for live vector touch updates
-    executeProportionalGait(); // Execute continuous differential blending
+    server.handleClient();
+    updateHarmonicGait(); // Runs at a smooth 50 Hz refresh rate
 }
