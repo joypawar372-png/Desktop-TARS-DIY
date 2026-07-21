@@ -16,35 +16,32 @@
 #define SERVO_RIGHT_PIN  19
 
 // --- Wi-Fi Network Credentials ---
-const char* WIFI_SSID     = "";
-const char* WIFI_PASSWORD = "";
+const char* WIFI_SSID     = "Aashi pawar";
+const char* WIFI_PASSWORD = "8221946003";
 
-// --- Servo Hardware Trims ---
-float leftOffset  = 90.0;
-float rightOffset = 90.0;
+// --- Servo Hardware Trims & Direction Inversion ---
+float leftOffset        = 90.0;
+float rightOffset       = 90.0;
+bool invertRightServo   = false;
 
-// --- Phase-Based Inching Gait Parameters (Fine-Tunable via Web UI) ---
-float legSwingAngle  = 25.0; // Degrees legs reach forward relative to body
-float bodyPushAngle   = 25.0; // Degrees legs push backward to drive center body forward
-float pitchLiftAngle  = 12.0; // Dynamic CoM pitch shift to unweight body/legs during transitions
-float swingDurationMs = 220.0; // Time in ms spent swinging legs forward
-float pushDurationMs  = 280.0; // Time in ms spent pushing main body forward
-float pauseDurationMs = 80.0;  // Settling delay between stance transitions
-float servoSmoothFactor = 0.25; // Servo trajectory interpolation factor (0.05=slow/smooth, 0.5=fast)
-
-bool invertRightServo = false;
-
-String customMessage = "TARS PHASE OS";
+// --- Gait Parameters (Fully Tunable via Web UI) ---
+float legSwingAngle     = 25.0; // Degrees legs swing forward
+float bodyPushAngle      = 25.0; // Degrees legs push backward to move body
+float pitchLiftAngle     = 12.0; // Dynamic pitch lift to unweight chassis
+float swingDurationMs    = 220.0; // Leg swing phase duration (ms)
+float pushDurationMs     = 280.0; // Body push phase duration (ms)
+float pauseDurationMs    = 80.0;  // Transition pause duration (ms)
+float servoSmoothFactor  = 0.25;  // Motion smoothing interpolation factor
 
 // --- Control Vector States ---
 float targetX = 0.0, targetY = 0.0;
 float currentX = 0.0, currentY = 0.0;
 
 // --- Output Servo Angles ---
-float currentLeftAngle = 90.0;
+float currentLeftAngle  = 90.0;
 float currentRightAngle = 90.0;
 
-// --- Discrete Phase State Machine Definition ---
+// --- Phase State Machine Definition ---
 enum GaitPhase {
   PHASE_IDLE,
   PHASE_SWING_LEGS_FORWARD,
@@ -55,6 +52,19 @@ enum GaitPhase {
 
 GaitPhase currentPhase = PHASE_IDLE;
 unsigned long phaseStartTime = 0;
+
+// --- Animated Moving & Wandering Eyes Engine Variables ---
+unsigned long lastEyeFrame = 0;
+unsigned long nextBlinkTime = 0;
+bool isBlinking = false;
+unsigned long blinkStartTime = 0;
+
+// Random Look / Gaze Vectors
+float currentGazeX = 0.0;
+float currentGazeY = 0.0;
+float targetGazeX = 0.0;
+float targetGazeY = 0.0;
+unsigned long nextGazeShiftTime = 0;
 
 // --- System Objects ---
 Adafruit_SSD1306 display(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, OLED_RESET);
@@ -68,7 +78,7 @@ const char HTML_INTERFACE[] PROGMEM = R"rawliteral(
 <html>
 <head>
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>TARS Discrete Phase Controller</title>
+    <title>TARS Controller</title>
     <style>
         body { font-family: -apple-system, sans-serif; background: #121212; color: #E0E0E0; text-align: center; margin: 0; padding: 12px; }
         h1 { font-size: 22px; letter-spacing: 3px; color: #FFF; margin-bottom: 2px; }
@@ -80,7 +90,6 @@ const char HTML_INTERFACE[] PROGMEM = R"rawliteral(
         #stick { position: absolute; width: 60px; height: 60px; background: #007AFF; border-radius: 50%; top: 55px; left: 55px; box-shadow: 0 4px 8px rgba(0,0,0,0.4); }
         
         .btn { background: #FF3B30; color: white; border: none; padding: 10px; font-size: 13px; border-radius: 8px; cursor: pointer; width: 100%; font-weight: bold; margin-top: 8px;}
-        .btn-blue { background: #007AFF; margin-top: 6px;}
         
         .slider-container { margin: 10px 0; }
         label { font-weight: bold; font-size: 11px; color: #AAA; display: block; margin-bottom: 3px; }
@@ -88,22 +97,14 @@ const char HTML_INTERFACE[] PROGMEM = R"rawliteral(
         .slider::-webkit-slider-thumb { -webkit-appearance: none; width: 20px; height: 20px; border-radius: 50%; background: #007AFF; cursor: pointer; }
         .slider-highlight::-webkit-slider-thumb { background: #30D158; }
         .value-display { float: right; color: #007AFF; font-weight: bold; }
-        
-        input[type="text"] { width: 100%; padding: 8px; box-sizing: border-box; background: #222; color: #00FF00; border: 1px solid #444; border-radius: 6px; font-family: monospace; font-size: 14px; text-transform: uppercase; text-align: center; }
     </style>
 </head>
 <body>
     <h1>TARS</h1>
-    <div class="subtitle">2-STAGE DISCRETE INCHING GAIT</div>
+    <div class="subtitle">KINEMATIC CONTROL SYSTEM</div>
 
     <div class="card" style="text-align: center;">
-        <h3>OLED TELEMETRY</h3>
-        <input type="text" id="screenText" maxlength="12" placeholder="CUSTOM MESSAGE" value="TARS PHASE OS">
-        <button class="btn btn-blue" onclick="updateScreen()">UPDATE SCREEN</button>
-    </div>
-
-    <div class="card" style="text-align: center;">
-        <h3>DIRECTIONAL CONTROLLER</h3>
+        <h3>JOYSTICK CONTROL</h3>
         <div id="joystick-container">
             <div id="stick"></div>
         </div>
@@ -111,7 +112,7 @@ const char HTML_INTERFACE[] PROGMEM = R"rawliteral(
     </div>
 
     <div class="card">
-        <h3>PHASE GAIT TIMING & KINEMATICS</h3>
+        <h3>GAIT & TIMING TUNER</h3>
         <div class="slider-container">
             <label>LEG SWING ANGLE <span id="swingVal" class="value-display">25&deg;</span></label>
             <input type="range" min="5" max="45" value="25" class="slider slider-highlight" id="swingSlider" oninput="updateConfig()">
@@ -139,7 +140,7 @@ const char HTML_INTERFACE[] PROGMEM = R"rawliteral(
     </div>
 
     <div class="card">
-        <h3>SERVO ZERO TRIM</h3>
+        <h3>SERVO TRIM & INVERSION</h3>
         <div class="slider-container">
             <label>LEFT LEG TRIM <span id="leftVal" class="value-display">90&deg;</span></label>
             <input type="range" min="50" max="130" value="90" class="slider" id="leftSlider" oninput="updateConfig()">
@@ -148,17 +149,16 @@ const char HTML_INTERFACE[] PROGMEM = R"rawliteral(
             <label>RIGHT LEG TRIM <span id="rightVal" class="value-display">90&deg;</span></label>
             <input type="range" min="50" max="130" value="90" class="slider" id="rightSlider" oninput="updateConfig()">
         </div>
+        <div class="slider-container">
+            <label>INVERT RIGHT SERVO DIRECTION</label>
+            <input type="checkbox" id="invRight" onchange="updateConfig()">
+        </div>
     </div>
 
     <script>
         const container = document.getElementById('joystick-container');
         const stick = document.getElementById('stick');
         let active = false, lastX = 0, lastY = 0;
-
-        function updateScreen() {
-            let msg = document.getElementById('screenText').value;
-            fetch('/text?msg=' + encodeURIComponent(msg));
-        }
 
         function sendVector(x, y) {
             if (Math.abs(x - lastX) < 2 && Math.abs(y - lastY) < 2) return;
@@ -181,6 +181,7 @@ const char HTML_INTERFACE[] PROGMEM = R"rawliteral(
             let pause = document.getElementById('pauseSlider').value;
             let l_off = document.getElementById('leftSlider').value;
             let r_off = document.getElementById('rightSlider').value;
+            let inv_r = document.getElementById('invRight').checked ? 1 : 0;
             
             document.getElementById('swingVal').innerText = swing + '°';
             document.getElementById('pushVal').innerText = push + '°';
@@ -191,7 +192,7 @@ const char HTML_INTERFACE[] PROGMEM = R"rawliteral(
             document.getElementById('leftVal').innerText = l_off + '°';
             document.getElementById('rightVal').innerText = r_off + '°';
             
-            fetch(`/config?swing=${swing}&push=${push}&pitch=${pitch}&stime=${stime}&ptime=${ptime}&pause=${pause}&l_off=${l_off}&r_off=${r_off}`);
+            fetch(`/config?swing=${swing}&push=${push}&pitch=${pitch}&stime=${stime}&ptime=${ptime}&pause=${pause}&l_off=${l_off}&r_off=${r_off}&inv_r=${inv_r}`);
         }
 
         function handleMove(clientX, clientY) {
@@ -223,25 +224,81 @@ const char HTML_INTERFACE[] PROGMEM = R"rawliteral(
 </html>
 )rawliteral";
 
-// --- OLED Screen Telemetry ---
-void updateDisplay(String statusText) {
+// --- OLED Animated Moving & Blinking Eyes Engine ---
+void updateAnimatedEyes() {
+    unsigned long currentMillis = millis();
+    if (currentMillis - lastEyeFrame < 33) return; // Smooth 30 FPS Render Rate
+    lastEyeFrame = currentMillis;
+
+    // 1. Random Blinking Mechanics
+    if (!isBlinking && currentMillis >= nextBlinkTime) {
+        isBlinking = true;
+        blinkStartTime = currentMillis;
+        nextBlinkTime = currentMillis + random(2000, 5500); // Blink every 2-5.5 sec
+    }
+
+    int eyeHeight = 34; // Fully open eye height
+    if (isBlinking) {
+        if (currentMillis - blinkStartTime < 130) {
+            eyeHeight = 3; // Fully closed flat line
+        } else {
+            isBlinking = false;
+        }
+    }
+
+    // 2. Dynamic Eye Wandering / Joystick Override Logic
+    float joystickMag = sqrt(currentX * currentX + currentY * currentY);
+
+    if (joystickMag > 10.0) {
+        // Joystick actively overrides eye direction
+        targetGazeX = (currentX / 100.0) * 14.0;
+        targetGazeY = -(currentY / 100.0) * 10.0;
+    } else {
+        // Robot idle state: Randomly shift gaze left, right, up, down, or center
+        if (currentMillis >= nextGazeShiftTime) {
+            nextGazeShiftTime = currentMillis + random(1200, 3800);
+            
+            int gazeOption = random(0, 6);
+            switch(gazeOption) {
+                case 0: targetGazeX = -14.0; targetGazeY = 0.0;  break; // Look Far Left
+                case 1: targetGazeX = 14.0;  targetGazeY = 0.0;  break; // Look Far Right
+                case 2: targetGazeX = 0.0;   targetGazeY = 0.0;  break; // Look Center Forward
+                case 3: targetGazeX = -10.0; targetGazeY = -6.0; break; // Look Up-Left
+                case 4: targetGazeX = 10.0;  targetGazeY = -6.0; break; // Look Up-Right
+                case 5: targetGazeX = 0.0;   targetGazeY = 6.0;  break; // Look Down
+            }
+        }
+    }
+
+    // Smoothly ease/LERP current gaze coordinates towards target position
+    currentGazeX += (targetGazeX - currentGazeX) * 0.16;
+    currentGazeY += (targetGazeY - currentGazeY) * 0.16;
+
     display.clearDisplay();
-    display.setTextColor(SSD1306_WHITE);
-    
-    display.setTextSize(1);
-    display.setCursor(0, 0);
-    display.print("TARS DISCRETE GAIT");
-    display.drawLine(0, 10, 128, 10, SSD1306_WHITE);
-    
-    display.setTextSize(2);
-    display.setCursor(0, 22);
-    display.print(customMessage);
-    
-    display.setTextSize(1);
-    display.setCursor(0, 52);
-    display.print("STATE: ");
-    display.print(statusText);
-    
+
+    // Eye Dimensions & Base Centered Locations
+    int eyeWidth = 28;
+    int baseLeftEyeX = 36;
+    int baseRightEyeX = 92;
+    int baseEyeY = 32;
+
+    int drawLeftX  = baseLeftEyeX  + (int)currentGazeX;
+    int drawRightX = baseRightEyeX + (int)currentGazeX;
+    int drawY      = baseEyeY      + (int)currentGazeY;
+
+    // Render Expressive Rectangular Eyes with Rounded Corners
+    display.fillRoundRect(drawLeftX - eyeWidth/2,  drawY - eyeHeight/2, eyeWidth, eyeHeight, 6, SSD1306_WHITE);
+    display.fillRoundRect(drawRightX - eyeWidth/2, drawY - eyeHeight/2, eyeWidth, eyeHeight, 6, SSD1306_WHITE);
+
+    // Expressive Eyebrow Accents based on gaze direction
+    if (targetGazeY < -3.0 || currentY > 20) { // Looking up or forward
+        display.drawLine(drawLeftX - 12, drawY - eyeHeight/2 - 5, drawLeftX + 12, drawY - eyeHeight/2 - 2, SSD1306_WHITE);
+        display.drawLine(drawRightX - 12, drawY - eyeHeight/2 - 2, drawRightX + 12, drawY - eyeHeight/2 - 5, SSD1306_WHITE);
+    } else if (abs(currentGazeX) > 8.0 || abs(currentX) > 20) { // Looking left or right
+        display.drawLine(drawLeftX - 10, drawY - eyeHeight/2 - 4, drawLeftX + 10, drawY - eyeHeight/2 - 4, SSD1306_WHITE);
+        display.drawLine(drawRightX - 10, drawY - eyeHeight/2 - 4, drawRightX + 10, drawY - eyeHeight/2 - 4, SSD1306_WHITE);
+    }
+
     display.display();
 }
 
@@ -265,28 +322,20 @@ void handleConfig() {
     if (server.hasArg("pause")) pauseDurationMs = server.arg("pause").toFloat();
     if (server.hasArg("l_off")) leftOffset     = server.arg("l_off").toFloat();
     if (server.hasArg("r_off")) rightOffset    = server.arg("r_off").toFloat();
+    if (server.hasArg("inv_r")) invertRightServo = (server.arg("inv_r").toInt() == 1);
     
     server.send(200, "text/plain", "OK");
 }
 
-void handleText() {
-    if (server.hasArg("msg")) {
-        customMessage = server.arg("msg");
-        customMessage.toUpperCase();
-        updateDisplay("TEXT UPDATED");
-        server.send(200, "text/plain", "OK");
-    }
-}
-
-// --- Discrete State Machine Gait Engine ---
+// --- Corrected 3-Block TARS Kinematic Phase Engine ---
 void updatePhaseGaitEngine() {
     static unsigned long lastLoopTime = 0;
     unsigned long currentMillis = millis();
     
-    if (currentMillis - lastLoopTime < 15) return; // 66 Hz execution loop
+    if (currentMillis - lastLoopTime < 15) return; // 66 Hz Loop
     lastLoopTime = currentMillis;
 
-    // Filter incoming vector inputs for smooth transitions
+    // Filter incoming inputs using Exponential Moving Average
     currentX += (targetX - currentX) * 0.15;
     currentY += (targetY - currentY) * 0.15;
 
@@ -294,7 +343,7 @@ void updatePhaseGaitEngine() {
     float normY = currentY / 100.0;
     float magnitude = sqrt(normX * normX + normY * normY);
 
-    // IDLE CHECK: If joystick is neutral, gently reset servos to zero trim
+    // IDLE CHECK: When Joystick is centered, reset servos to neutral trim
     if (magnitude < 0.08) {
         currentPhase = PHASE_IDLE;
         currentLeftAngle  += (leftOffset - currentLeftAngle) * 0.1;
@@ -310,9 +359,8 @@ void updatePhaseGaitEngine() {
     float targetLeft = leftOffset;
     float targetRight = rightOffset;
 
-    // Execute state machine based on directional vector
     if (abs(normY) >= abs(normX) - 0.1) {
-        // --- INCHING GAIT ENGINE (FORWARD / REVERSE) ---
+        // --- FORWARD / BACKWARD INCHING GAIT ---
         float dirSign = (normY >= 0.0) ? 1.0 : -1.0;
         float scale = abs(normY);
 
@@ -320,59 +368,50 @@ void updatePhaseGaitEngine() {
             case PHASE_IDLE:
                 currentPhase = PHASE_SWING_LEGS_FORWARD;
                 phaseStartTime = currentMillis;
-                updateDisplay("SWING LEGS");
                 break;
 
             case PHASE_SWING_LEGS_FORWARD:
-                // STAGE 1: Both legs swing forward while main body tilts backward to break friction
                 targetLeft  = leftOffset  + (dirSign * legSwingAngle * scale) + (dirSign * pitchLiftAngle);
-                targetRight = rightOffset + (dirSign * legSwingAngle * scale) + (dirSign * pitchLiftAngle);
+                targetRight = rightOffset - (dirSign * legSwingAngle * scale) - (dirSign * pitchLiftAngle);
 
                 if (elapsedTime >= swingDurationMs) {
                     currentPhase = PHASE_PLANT_LEGS;
                     phaseStartTime = currentMillis;
-                    updateDisplay("PLANT LEGS");
                 }
                 break;
 
             case PHASE_PLANT_LEGS:
-                // TRANSITION: Settle leg contact with the floor
                 targetLeft  = leftOffset  + (dirSign * legSwingAngle * scale);
-                targetRight = rightOffset + (dirSign * legSwingAngle * scale);
+                targetRight = rightOffset - (dirSign * legSwingAngle * scale);
 
                 if (elapsedTime >= pauseDurationMs) {
                     currentPhase = PHASE_PUSH_BODY_FORWARD;
                     phaseStartTime = currentMillis;
-                    updateDisplay("PUSH BODY");
                 }
                 break;
 
             case PHASE_PUSH_BODY_FORWARD:
-                // STAGE 2: Both legs rotate backward, anchoring on floor and pushing main body forward
                 targetLeft  = leftOffset  - (dirSign * bodyPushAngle * scale) - (dirSign * pitchLiftAngle);
-                targetRight = rightOffset - (dirSign * bodyPushAngle * scale) - (dirSign * pitchLiftAngle);
+                targetRight = rightOffset + (dirSign * bodyPushAngle * scale) + (dirSign * pitchLiftAngle);
 
                 if (elapsedTime >= pushDurationMs) {
                     currentPhase = PHASE_PLANT_BODY;
                     phaseStartTime = currentMillis;
-                    updateDisplay("PLANT BODY");
                 }
                 break;
 
             case PHASE_PLANT_BODY:
-                // TRANSITION: Transfer weight back to center body to unweight legs
                 targetLeft  = leftOffset  - (dirSign * bodyPushAngle * scale);
-                targetRight = rightOffset - (dirSign * bodyPushAngle * scale);
+                targetRight = rightOffset + (dirSign * bodyPushAngle * scale);
 
                 if (elapsedTime >= pauseDurationMs) {
                     currentPhase = PHASE_SWING_LEGS_FORWARD;
                     phaseStartTime = currentMillis;
-                    updateDisplay("SWING LEGS");
                 }
                 break;
         }
     } else {
-        // --- AXIAL SCISSORING ENGINE (TURNING LEFT / RIGHT) ---
+        // --- LEFT / RIGHT TURNING (SCISSORING) GAIT ---
         float turnSign = (normX >= 0.0) ? 1.0 : -1.0;
         float scale = abs(normX);
 
@@ -380,13 +419,11 @@ void updatePhaseGaitEngine() {
             case PHASE_IDLE:
                 currentPhase = PHASE_SWING_LEGS_FORWARD;
                 phaseStartTime = currentMillis;
-                updateDisplay("PIVOT STRIKE");
                 break;
 
             case PHASE_SWING_LEGS_FORWARD:
-                // Left leg moves forward, Right leg moves backward
                 targetLeft  = leftOffset  + (turnSign * legSwingAngle * scale);
-                targetRight = rightOffset - (turnSign * legSwingAngle * scale);
+                targetRight = rightOffset + (turnSign * legSwingAngle * scale);
 
                 if (elapsedTime >= swingDurationMs) {
                     currentPhase = PHASE_PLANT_LEGS;
@@ -396,19 +433,17 @@ void updatePhaseGaitEngine() {
 
             case PHASE_PLANT_LEGS:
                 targetLeft  = leftOffset  + (turnSign * legSwingAngle * scale);
-                targetRight = rightOffset - (turnSign * legSwingAngle * scale);
+                targetRight = rightOffset + (turnSign * legSwingAngle * scale);
 
                 if (elapsedTime >= pauseDurationMs) {
                     currentPhase = PHASE_PUSH_BODY_FORWARD;
                     phaseStartTime = currentMillis;
-                    updateDisplay("PIVOT REVERSE");
                 }
                 break;
 
             case PHASE_PUSH_BODY_FORWARD:
-                // Reverse scissor directions to spin chassis
                 targetLeft  = leftOffset  - (turnSign * bodyPushAngle * scale);
-                targetRight = rightOffset + (turnSign * bodyPushAngle * scale);
+                targetRight = rightOffset - (turnSign * bodyPushAngle * scale);
 
                 if (elapsedTime >= pushDurationMs) {
                     currentPhase = PHASE_PLANT_BODY;
@@ -418,12 +453,11 @@ void updatePhaseGaitEngine() {
 
             case PHASE_PLANT_BODY:
                 targetLeft  = leftOffset  - (turnSign * bodyPushAngle * scale);
-                targetRight = rightOffset + (turnSign * bodyPushAngle * scale);
+                targetRight = rightOffset - (turnSign * bodyPushAngle * scale);
 
                 if (elapsedTime >= pauseDurationMs) {
                     currentPhase = PHASE_SWING_LEGS_FORWARD;
                     phaseStartTime = currentMillis;
-                    updateDisplay("PIVOT STRIKE");
                 }
                 break;
         }
@@ -433,11 +467,9 @@ void updatePhaseGaitEngine() {
         targetRight = rightOffset - (targetRight - rightOffset);
     }
 
-    // Exponential Moving Average Interpolation for Servo Angles (Removes hard mechanical shocks)
     currentLeftAngle  += (targetLeft  - currentLeftAngle)  * servoSmoothFactor;
     currentRightAngle += (targetRight - currentRightAngle) * servoSmoothFactor;
 
-    // Write signals safely constrained to hardware limits
     servoLeft.write((int)constrain(currentLeftAngle, 10.0, 170.0));
     servoRight.write((int)constrain(currentRightAngle, 10.0, 170.0));
 }
@@ -445,20 +477,22 @@ void updatePhaseGaitEngine() {
 void setup() {
     Serial.begin(115200);
 
-    // Initialize OLED Display
+    // Initialize OLED Screen
     if(!display.begin(SSD1306_SWITCHCAPVCC, SCREEN_ADDRESS)) {
         Serial.println("OLED init failed");
         for(;;);
     }
 
-    // Connect to WiFi Network
-    WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
+    // Display Initial Connection Status
     display.clearDisplay();
     display.setTextColor(SSD1306_WHITE);
     display.setTextSize(2);
-    display.setCursor(0, 20);
+    display.setCursor(10, 24);
     display.print("CONNECTING");
     display.display();
+
+    // Connect to Wi-Fi Network
+    WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
 
     int attempts = 0;
     while (WiFi.status() != WL_CONNECTED) {
@@ -467,24 +501,32 @@ void setup() {
         if (attempts > 30) ESP.restart();
     }
 
-    customMessage = WiFi.localIP().toString();
-    updateDisplay("SYS ONLINE");
+    // Display "CONNECTED" Status for exactly 1 second
+    display.clearDisplay();
+    display.setTextSize(2);
+    display.setCursor(12, 24);
+    display.print("CONNECTED");
+    display.display();
+    delay(1000);
 
-    // Initialize Servo Hardware
+    // Attach Servos and set neutral stance
     servoLeft.attach(SERVO_LEFT_PIN);
     servoRight.attach(SERVO_RIGHT_PIN);
     servoLeft.write((int)leftOffset);
     servoRight.write((int)rightOffset);
 
-    // Bind HTTP Web Server Routes
+    // Bind Web Server HTTP Handler Routes
     server.on("/", handleRoot);
     server.on("/vector", handleVector);
     server.on("/config", handleConfig);
-    server.on("/text", handleText);
     server.begin();
+
+    nextBlinkTime = millis() + 2000;
+    nextGazeShiftTime = millis() + 1500;
 }
 
 void loop() {
     server.handleClient();
     updatePhaseGaitEngine();
+    updateAnimatedEyes();
 }
