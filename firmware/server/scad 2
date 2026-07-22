@@ -1,7 +1,7 @@
 // =========================================================================
-// CODE 2: TARS SNAP-FIT COVERS (LARGE RECTANGULAR 18650 BATTERY BACKPACK)
+// CODE 2: TARS SNAP-FIT COVERS (SEALED TOP BATTERY BACKPACK POD)
 // Features: Flat-bed print configuration, rim-lock detents, tactical lines, 
-//           fully closed walls, and a large rectangular interior cell cavity.
+//           fully closed top/vertical walls, and large rectangular cell cavity.
 // =========================================================================
 
 $fn = 64;
@@ -16,7 +16,7 @@ print_gap   = 20;   // Layout spacing on the build plate
 
 // --- Print Bed Layout Arrangement ---
 translate([0, 0, 0]) 
-    tars_snap_cover(target_w=body_w); // Central Core Back Panel (Rectangular Battery Pod)
+    tars_snap_cover(target_w=body_w); // Central Core Back Panel (Sealed Battery Pod)
 
 translate([-(body_w/2 + leg_w/2 + print_gap), 0, 0]) 
     tars_snap_cover(target_w=leg_w);  // Left Leg Back Panel (Solid)
@@ -62,8 +62,8 @@ module tars_snap_cover(target_w) {
         
         // =================================================================
         // LARGE RECTANGULAR 18650 BATTERY BACKPACK POD (Main Body Only)
-        // Fully enclosed rectangular shell with a clean rectangular cavity 
-        // sized to slide an 18650 cell directly into place from the bottom.
+        // Fully enclosed rectangular shell with a clean rectangular cavity,
+        // bottom slide-in slot, and completely closed top wall.
         // =================================================================
         if (target_w == body_w) {
             pod_w = 24.0; // Outer shell width
@@ -91,10 +91,6 @@ module tars_snap_cover(target_w) {
                 // Bottom entry slot opening to slide the battery directly through
                 translate([-20.5/2, 1.5, cover_thick]) 
                     cube([20.5, 3.0, 17.5]);
-                
-                // Internal wire routing notch at the top of the cavity
-                translate([-6.0, 2.0 + pod_h - 4.0, cover_thick + pod_d - 5.0]) 
-                    cube([12.0, 5.0, 5.0]);
                 
                 // Tactical detail accent groove wrapping around the outer backpack pod
                 translate([-pod_w/2 - 1.0, 40.0, cover_thick + pod_d - 2.0]) 
