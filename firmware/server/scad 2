@@ -1,0 +1,116 @@
+// =========================================================================
+// CODE 2: TARS SNAP-FIT COVERS (LARGE RECTANGULAR 18650 BATTERY BACKPACK)
+// Features: Flat-bed print configuration, rim-lock detents, tactical lines, 
+//           fully closed walls, and a large rectangular interior cell cavity.
+// =========================================================================
+
+$fn = 64;
+
+// --- Architecture Parameters (Must mirror Code 1 exactly) ---
+body_w      = 60;   
+body_h      = 120;  
+leg_w       = 20;   
+wall        = 2.5;  // Core structural offset thickness
+cover_thick = 2;    // Panel depth matching chassis step-recesses
+print_gap   = 20;   // Layout spacing on the build plate
+
+// --- Print Bed Layout Arrangement ---
+translate([0, 0, 0]) 
+    tars_snap_cover(target_w=body_w); // Central Core Back Panel (Rectangular Battery Pod)
+
+translate([-(body_w/2 + leg_w/2 + print_gap), 0, 0]) 
+    tars_snap_cover(target_w=leg_w);  // Left Leg Back Panel (Solid)
+
+translate([(body_w/2 + leg_w/2 + print_gap), 0, 0]) 
+    tars_snap_cover(target_w=leg_w);  // Right Leg Back Panel (Solid)
+
+
+// =========================================================================
+// UNIVERSAL COMPONENT PANEL MODULE
+// =========================================================================
+module tars_snap_cover(target_w) {
+    clearance = 0.35; // 3D printing mechanical tolerance buffer
+    
+    // Calculate final panel dimensions based on internal chassis step borders
+    cw = target_w - 2.5 - clearance;
+    ch = body_h - 2*wall - clearance;
+    
+    union() {
+        difference() {
+            // Main Shield Faceplate Base
+            translate([-cw/2, 0, 0]) 
+                cube([cw, ch, cover_thick]);
+            
+            // External Tactical Grooves on the flat panel areas
+            for(y_line = [30 - wall, 60 - wall, 90 - wall]) {
+                translate([-cw/2 - 1, y_line - 0.3, cover_thick - 0.5]) 
+                    cube([cw + 2, 0.6, 0.6]);
+            }
+            
+            // Upper cooling air vents (Main Body Only, above the battery pod)
+            if (target_w == body_w) {
+                for (y_vent = [85, 90, 95, 100]) {
+                    translate([-14, y_vent, -0.1]) 
+                        cube([28, 1.2, cover_thick + 0.2]);
+                }
+                
+                // Internal pass-through window so battery wires can enter the main body
+                translate([-8.0, 25.0, -0.1]) 
+                    cube([16.0, 45.0, cover_thick + 0.2]);
+            }
+        }
+        
+        // =================================================================
+        // LARGE RECTANGULAR 18650 BATTERY BACKPACK POD (Main Body Only)
+        // Fully enclosed rectangular shell with a clean rectangular cavity 
+        // sized to slide an 18650 cell directly into place from the bottom.
+        // =================================================================
+        if (target_w == body_w) {
+            pod_w = 24.0; // Outer shell width
+            pod_h = 72.0; // Outer shell height
+            pod_d = 20.0; // Outer shell depth projection
+            
+            difference() {
+                union() {
+                    // Main outward rectangular pod shell
+                    translate([-pod_w/2, 2.0, cover_thick]) 
+                        cube([pod_w, pod_h, pod_d]);
+                    
+                    // Stylized beveled top cap sealing the top wall completely
+                    translate([-pod_w/2, 2.0 + pod_h, cover_thick])
+                        hull() {
+                            cube([pod_w, 0.1, pod_d]);
+                            translate([2.0, 2.0, 0]) cube([pod_w - 4.0, 0.1, pod_d - 3.0]);
+                        }
+                }
+                
+                // Large rectangular inner cavity (Width: 20.5mm, Length: 68mm, Depth: 17.5mm)
+                translate([-20.5/2, 4.0, cover_thick]) 
+                    cube([20.5, 68.0, 17.5]);
+                
+                // Bottom entry slot opening to slide the battery directly through
+                translate([-20.5/2, 1.5, cover_thick]) 
+                    cube([20.5, 3.0, 17.5]);
+                
+                // Internal wire routing notch at the top of the cavity
+                translate([-6.0, 2.0 + pod_h - 4.0, cover_thick + pod_d - 5.0]) 
+                    cube([12.0, 5.0, 5.0]);
+                
+                // Tactical detail accent groove wrapping around the outer backpack pod
+                translate([-pod_w/2 - 1.0, 40.0, cover_thick + pod_d - 2.0]) 
+                    cube([pod_w + 2.0, 0.6, 0.6]);
+            }
+        }
+        
+        // Low-Profile Micro-Cylindrical Perimeter Detent Locking Registration Beads
+        for (y_pos = [20 - wall, 50 - wall, 85 - wall, 110 - wall]) {
+            translate([-cw/2, y_pos, cover_thick/2]) 
+                rotate([90, 0, 0]) 
+                cylinder(r=0.35, h=3.5, center=true);
+                
+            translate([cw/2, y_pos, cover_thick/2])  
+                rotate([90, 0, 0]) 
+                cylinder(r=0.35, h=3.5, center=true);
+        }
+    }
+}
