@@ -1,0 +1,100 @@
+You can run this locally using Ollama (free, offline, and runs locally on your laptop).
+
+Make sure Ollama is running on your laptop (ollama run llama3.2 or mistral or phi3).
+
+Install the requests library in PowerShell if you haven't already:
+
+PowerShell
+python -m pip install requests
+Updated AI-Powered Script (tars_ai_brain.py)
+This script takes your voice input, sends it to your local Ollama AI model with TARS's persona, and speaks the reply back to you.
+
+Python
+import sounddevice as sd
+import speech_recognition as sr
+import pyttsx3
+import requests
+import json
+
+# --- 1. VOICE SYNTHESIS SETUP ---
+engine = pyttsx3.init()
+engine.setProperty('rate', 165)  # Speech speed
+
+def tars_speak(text):
+    print(f"\nTARS: {text}\n")
+    engine.say(text)
+    engine.runAndWait()
+
+# --- 2. AUDIO RECORDING SETUP ---
+def listen_laptop_mic(duration=4, samplerate=16000):
+    print("\n[Listening... Speak now!]")
+    audio_data = sd.rec(int(duration * samplerate), samplerate=samplerate, channels=1, dtype='int16')
+    sd.wait()
+    
+    audio_bytes = audio_data.tobytes()
+    return sr.AudioData(audio_bytes, samplerate, 2)
+
+# --- 3. OLLAMA AI BRAIN FUNCTION ---
+TARS_SYSTEM_PROMPT = (
+    "You are TARS, the tactical robot from Interstellar. "
+    "Your personality is direct, logical, dryly sarcastic, and witty. "
+    "Your humor setting is at 75%. "
+    "CRITICAL RULE: Keep all answers extremely short and concise (1 to 2 sentences max) "
+    "so that they can be quickly spoken via Text-to-Speech. Do not use emojis or special markdown formatting."
+)
+
+def query_tars_ai(user_prompt):
+    url = "http://localhost:11434/api/chat"
+    
+    payload = {
+        "model": "llama3.2",  # Replace with 'mistral', 'phi3', or whichever model you have pulled in Ollama
+        "messages": [
+            {"role": "system", "content": TARS_SYSTEM_PROMPT},
+            {"role": "user", "content": user_prompt}
+        ],
+        "stream": False
+    }
+    
+    try:
+        response = requests.post(url, json=payload, timeout=10)
+        if response.status_code == 200:
+            result = response.json()
+            return result.get("message", {}).get("content", "My data processing unit glitched.")
+        else:
+            return "Local AI service returned an error."
+    except Exception as e:
+        return "I cannot reach my core AI memory. Is Ollama running?"
+
+# --- 4. MAIN INTERACTIVE LOOP ---
+recognizer = sr.Recognizer()
+tars_speak("TARS artificial intelligence online. Humor set to 75 percent.")
+
+while True:
+    try:
+        audio = listen_laptop_mic(duration=5)
+        user_text = recognizer.recognize_google(audio)
+        print(f"You: {user_text}")
+
+        # Simple exit trigger
+        if "shutdown" in user_text.lower() or "goodbye" in user_text.lower():
+            tars_speak("Going into standby mode. Don't leave me in the wormhole.")
+            break
+
+        # Query the AI model
+        print("[Thinking...]")
+        ai_response = query_tars_ai(user_text)
+        
+        # Speak the AI response
+        tars_speak(ai_response)
+
+    except sr.UnknownValueError:
+        # Ignore silence / unintelligible background noise
+        pass
+    except Exception as e:
+        print(f"Error: {e}")
+How It Works
+Personality Tuning: The TARS_SYSTEM_PROMPT enforces a 1-2 sentence limit, which prevents the AI from giving long-winded paragraphs that take forever for pyttsx3 to read aloud.
+
+Local Latency: Using a lightweight local model like llama3.2 or phi3 keeps response times down to 1–2 seconds.
+
+Extensibility: When you connect your ESP32 or Arduino over USB later, you can have Python check the sentiment/intent of the AI reply and send matching movement commands (e.g., nod, tilt, wave) directly to TARS's leg servos while it speaks!
