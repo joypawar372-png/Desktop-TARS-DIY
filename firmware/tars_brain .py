@@ -5,7 +5,7 @@ import os
 import re
 import time
 import random
-import serial
+import socket
 import ollama
 import pygame
 import edge_tts
@@ -17,35 +17,43 @@ import shutil
 import sys
 
 # =========================================================================
-# 1. BLUETOOTH & OLED SYSTEM MATRIX
+# 1. WIRELESS SOCKET MATRIX (NO COM PORTS)
 # =========================================================================
-BLUETOOTH_PORT = 'COM6'
-BAUD_RATE = 115200
+# Set ESP32_IP to your ESP32's IP address displayed on serial monitor or OLED
+ESP32_IP = '192.168.1.100'  # e.g., '192.168.4.1' if using TARS AP Mode
+ESP32_PORT = 8888
 
-bt_tars = None
-try:
-    bt_tars = serial.Serial(BLUETOOTH_PORT, BAUD_RATE, timeout=0.1, write_timeout=0.1)
-    time.sleep(0.5)
-    print(f"\n[SUCCESS] Bluetooth link active on {BLUETOOTH_PORT}\n")
-except Exception as e:
-    print(f"\n[WARNING] Could not open {BLUETOOTH_PORT}. Running in terminal mode.\n")
+tcp_client = None
 
-def send_bt_cmd(cmd):
-    """Sends clean packets to ESP32 over Bluetooth."""
-    if bt_tars and bt_tars.is_open:
+def connect_wireless():
+    global tcp_client
+    try:
+        tcp_client = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        tcp_client.settimeout(1.5)
+        tcp_client.connect((ESP32_IP, ESP32_PORT))
+        print(f"\n[SUCCESS] Wireless link active with ESP32 at {ESP32_IP}:{ESP32_PORT}\n")
+    except Exception as e:
+        print(f"\n[WARNING] Wireless socket connection to {ESP32_IP} failed: {e}. Running local mode.\n")
+        tcp_client = None
+
+connect_wireless()
+
+def send_wifi_cmd(cmd):
+    """Sends clean packets to ESP32 over TCP Wi-Fi Socket."""
+    global tcp_client
+    clean_cmd = cmd.replace('\r', '').replace('\n', '|') + "\r\n"
+    if tcp_client:
         try:
-            # Strip any internal carriage returns/newlines from the payload
-            clean_cmd = cmd.replace('\r', '').replace('\n', '|')
-            bt_tars.write(f"{clean_cmd}\r\n".encode('utf-8'))
-            bt_tars.flush()
-            print(f"[BT TRANSMIT] -> {clean_cmd}")
+            tcp_client.sendall(clean_cmd.encode('utf-8'))
+            print(f"[WIFI TRANSMIT] -> {clean_cmd.strip()}")
         except Exception as e:
-            print(f"[BT ERROR]: {e}")
+            print(f"[WIFI TRANSMIT ERROR]: {e}")
+            connect_wireless()
     else:
-        print(f"[BT OFFLINE] Packet skipped: {cmd}")
+        print(f"[OFFLINE] Packet skipped: {cmd.strip()}")
 
 def format_for_oled(text, max_chars=20):
-    """Formats text using pipe delimiters (|) instead of newlines."""
+    """Formats text using pipe delimiters (|) for clean multi-line display."""
     clean = re.sub(r'[*_~#`]', '', text).strip()
     words = clean.split()
     lines = []
@@ -62,7 +70,7 @@ def format_for_oled(text, max_chars=20):
     return "|".join(lines)
 
 # =========================================================================
-# 2. VOICE SYNTHESIS & TACTICAL AUDIO
+# 2. VOICE SYNTHESIS & AUDIO CONTROL
 # =========================================================================
 pygame.mixer.init()
 recognizer = sr.Recognizer()
@@ -107,12 +115,14 @@ def play_instant_sound(filename):
     except Exception:
         pass
 
-def speak_humanlike_tars(text, interrupt_threshold, sample_rate=16000):
+def speak_humanlike_tars(text, interrupt_threshold, add_hmm=False, sample_rate=16000):
+    if add_hmm and not text.rstrip().endswith("hmm?"):
+        text = text.rstrip(" .!?") + ", hmm?"
+
     print(f"\nTARS: {text}\n")
     
-    # Send formatted line string to OLED using pipe delimiters
     oled_text = format_for_oled(text)
-    send_bt_cmd(f"DISP:{oled_text}")
+    send_wifi_cmd(f"DISP:{oled_text}")
 
     if random.random() < 0.15 and not text.startswith("*"):
         play_instant_sound("audio/sigh.mp3")
@@ -132,7 +142,7 @@ def speak_humanlike_tars(text, interrupt_threshold, sample_rate=16000):
                     print("\n[COMMANDER INTERRUPTED]")
                     pygame.mixer.music.stop()
                     interrupted = True
-                    send_bt_cmd("DISP:Interrupted")
+                    send_wifi_cmd("DISP:Interrupted")
                     break
                 pygame.time.Clock().tick(30)
 
@@ -249,7 +259,7 @@ def listen_mic(threshold, max_seconds=8, pause_limit=1.2, sample_rate=16000):
 # =========================================================================
 # 5. MAIN SYSTEM MATRIX
 # =========================================================================
-send_bt_cmd("DISP:TARS Online")
+send_wifi_cmd("DISP:TARS Online")
 trigger_threshold = calibrate_ambient_noise()
 
 def get_system_prompt():
@@ -270,7 +280,7 @@ while True:
         user_cmd = ""
 
         if followup_active:
-            send_bt_cmd("DISP:Listening...")
+            send_wifi_cmd("DISP:Listening...")
             play_instant_sound("audio/listening.mp3")
             cmd_audio = listen_mic(trigger_threshold * 0.5, max_seconds=7, pause_limit=1.3)
             followup_active = False
@@ -285,7 +295,7 @@ while True:
 
             print(f"[Heard]: {wake_text}")
             if contains_wake_word(wake_text):
-                send_bt_cmd("DISP:Listening...")
+                send_wifi_cmd("DISP:Listening...")
                 play_instant_sound(random.choice(["audio/yes_sir.mp3", "audio/listening.mp3", "audio/orders.mp3"]))
                 cmd_audio = listen_mic(trigger_threshold * 0.6, max_seconds=9, pause_limit=1.2)
                 if not cmd_audio: continue
@@ -295,10 +305,10 @@ while True:
             user_cmd = recognizer.recognize_google(cmd_audio).lower()
             print(f"Commander: '{user_cmd}'")
         except Exception:
-            speak_humanlike_tars("Audio feed garbled... Repeat the directive, Commander.", trigger_threshold)
+            speak_humanlike_tars("Audio feed garbled... Repeat the directive, Commander.", trigger_threshold, add_hmm=True)
             continue
 
-        # SELF-EDITING PROTOCOL WITH SPECIFIC APPROVAL
+        # SELF-EDITING PROTOCOL WITH TRANSMISSION AND EXPLICIT APPROVAL
         if any(k in user_cmd for k in ["edit your code", "update your code", "modify your code"]):
             speak_humanlike_tars("Analyzing proposed updates... Stand by, Commander.", trigger_threshold)
             summary, new_code = generate_code_update(user_cmd)
@@ -309,10 +319,10 @@ while True:
                 print(f" -> {summary}")
                 print("="*60 + "\n")
 
-                send_bt_cmd(f"DISP:Edit Req:|{summary[:25]}")
+                send_wifi_cmd(f"DISP:Edit Req:|{summary[:25]}")
 
                 approval_prompt = f"I plan to edit the code to {summary}. Do you authorize me to edit this part of my code?"
-                speak_humanlike_tars(approval_prompt, trigger_threshold)
+                speak_humanlike_tars(approval_prompt, trigger_threshold, add_hmm=True)
 
                 play_instant_sound("audio/listening.mp3")
                 auth_audio = listen_mic(trigger_threshold * 0.5, max_seconds=7, pause_limit=1.5)
@@ -329,24 +339,24 @@ while True:
                             time.sleep(1.5)
                             os._exit(0)
                         else:
-                            speak_humanlike_tars("Authorization denied. Aborting code edit.", trigger_threshold)
+                            speak_humanlike_tars("Authorization denied. Aborting code edit.", trigger_threshold, add_hmm=True)
                     except Exception:
-                        speak_humanlike_tars("Voice approval ambiguous. Aborting update.", trigger_threshold)
+                        speak_humanlike_tars("Voice approval ambiguous. Aborting update.", trigger_threshold, add_hmm=True)
             else:
-                speak_humanlike_tars("Could not synthesize valid code modifications... Aborting.", trigger_threshold)
+                speak_humanlike_tars("Could not synthesize valid code modifications... Aborting.", trigger_threshold, add_hmm=True)
             continue
 
         # MOTION PARSING
         direction, count = parse_motion_command(user_cmd)
         if direction:
             bt_cmd = f"{direction}_{count}"
-            send_bt_cmd(bt_cmd)
+            send_wifi_cmd(bt_cmd)
             quips = [
                 f"Advancing {count} steps... Try to keep up, Commander.",
                 f"Executing {count} step movement... Watch my balance.",
                 f"Pivoting {count} paces... Stand clear."
             ]
-            speak_humanlike_tars(random.choice(quips), trigger_threshold)
+            speak_humanlike_tars(random.choice(quips), trigger_threshold, add_hmm=True)
             followup_active = True
             continue
 
@@ -355,14 +365,14 @@ while True:
         messages.extend(chat_messages[-4:])
         messages.append({'role': 'user', 'content': user_cmd})
 
-        send_bt_cmd("DISP:Thinking...")
+        send_wifi_cmd("DISP:Thinking...")
         response = ollama.chat(model='tars', messages=messages)
         ai_reply = response['message']['content']
 
         if ai_reply:
             chat_messages.append({'role': 'user', 'content': user_cmd})
             chat_messages.append({'role': 'assistant', 'content': ai_reply})
-            interrupted = speak_humanlike_tars(ai_reply, trigger_threshold)
+            interrupted = speak_humanlike_tars(ai_reply, trigger_threshold, add_hmm=True)
             if not interrupted:
                 followup_active = True
 
