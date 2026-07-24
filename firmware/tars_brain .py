@@ -1,131 +1,95 @@
 @'
 import asyncio
-import json
 import os
 import re
 import time
 import random
 import socket
+import threading
+import subprocess
+import webbrowser
 import ollama
 import pygame
 import edge_tts
 import numpy as np
 import sounddevice as sd
 import speech_recognition as sr
-import concurrent.futures
 import shutil
 import sys
 
 # =========================================================================
-# 1. WIRELESS SOCKET MATRIX (NO COM PORTS)
+# 1. WIRELESS SOCKET MATRIX
 # =========================================================================
-# Set ESP32_IP to your ESP32's IP address displayed on serial monitor or OLED
-ESP32_IP = '192.168.1.126'  # e.g., '192.168.4.1' if using TARS AP Mode
+ESP32_IP = '192.168.1.100'  # UPDATE THIS TO MATCH OLED IP
 ESP32_PORT = 8888
-
 tcp_client = None
 
 def connect_wireless():
     global tcp_client
     try:
+        if tcp_client: tcp_client.close()
         tcp_client = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         tcp_client.settimeout(1.5)
         tcp_client.connect((ESP32_IP, ESP32_PORT))
-        print(f"\n[SUCCESS] Wireless link active with ESP32 at {ESP32_IP}:{ESP32_PORT}\n")
-    except Exception as e:
-        print(f"\n[WARNING] Wireless socket connection to {ESP32_IP} failed: {e}. Running local mode.\n")
+        print(f"\n[SUCCESS] Wireless tactical link active: {ESP32_IP}:{ESP32_PORT}\n")
+    except Exception:
         tcp_client = None
 
 connect_wireless()
 
 def send_wifi_cmd(cmd):
-    """Sends clean packets to ESP32 over TCP Wi-Fi Socket."""
     global tcp_client
     clean_cmd = cmd.replace('\r', '').replace('\n', '|') + "\r\n"
     if tcp_client:
-        try:
-            tcp_client.sendall(clean_cmd.encode('utf-8'))
-            print(f"[WIFI TRANSMIT] -> {clean_cmd.strip()}")
-        except Exception as e:
-            print(f"[WIFI TRANSMIT ERROR]: {e}")
+        try: tcp_client.sendall(clean_cmd.encode('utf-8'))
+        except Exception:
             connect_wireless()
-    else:
-        print(f"[OFFLINE] Packet skipped: {cmd.strip()}")
+            if tcp_client:
+                try: tcp_client.sendall(clean_cmd.encode('utf-8'))
+                except: pass
 
 def format_for_oled(text, max_chars=20):
-    """Formats text using pipe delimiters (|) for clean multi-line display."""
     clean = re.sub(r'[*_~#`]', '', text).strip()
     words = clean.split()
     lines = []
-    curr_line = ""
+    curr = ""
     for w in words:
-        if len(curr_line) + len(w) + 1 <= max_chars:
-            curr_line += (" " if curr_line else "") + w
+        if len(curr) + len(w) + 1 <= max_chars: curr += (" " if curr else "") + w
         else:
-            lines.append(curr_line)
-            curr_line = w
+            lines.append(curr)
+            curr = w
             if len(lines) >= 4: break
-    if curr_line and len(lines) < 4:
-        lines.append(curr_line)
+    if curr and len(lines) < 4: lines.append(curr)
     return "|".join(lines)
 
 # =========================================================================
-# 2. VOICE SYNTHESIS & AUDIO CONTROL
+# 2. VOICE & AUDIO ENGINE
 # =========================================================================
 pygame.mixer.init()
 recognizer = sr.Recognizer()
 
 async def generate_tars_speech(text, file_path="tars_reply.mp3"):
-    clean = re.sub(r'[*_~#`]', '', text)
-    clean = clean.replace("...", ", ").replace("—", ", ")
-    
-    tts = edge_tts.Communicate(
-        text=clean,
-        voice="en-US-ChristopherNeural",
-        pitch="-2Hz",
-        rate="+0%"
-    )
+    clean = re.sub(r'[*_~#`]', '', text).replace("...", ", ").replace("—", ", ")
+    tts = edge_tts.Communicate(text=clean, voice="en-US-ChristopherNeural", pitch="-2Hz")
     await tts.save(file_path)
-
-async def prep_tactical_audio():
-    os.makedirs("audio", exist_ok=True)
-    voice = "en-US-ChristopherNeural"
-    phrases = {
-        "yes_sir": "Yes, Commander.",
-        "listening": "Listening.",
-        "speak": "Speak.",
-        "orders": "Awaiting orders.",
-        "sigh": "Sigh..."
-    }
-    for key, text in phrases.items():
-        filepath = f"audio/{key}.mp3"
-        if not os.path.exists(filepath):
-            tts = edge_tts.Communicate(text, voice, pitch="-2Hz")
-            await tts.save(filepath)
-
-asyncio.run(prep_tactical_audio())
 
 def play_instant_sound(filename):
     try:
         pygame.mixer.music.load(filename)
         pygame.mixer.music.play()
-        while pygame.mixer.music.get_busy():
-            pygame.time.Clock().tick(20)
+        while pygame.mixer.music.get_busy(): pygame.time.Clock().tick(20)
         pygame.mixer.music.unload()
-    except Exception:
-        pass
+    except Exception: pass
 
 def speak_humanlike_tars(text, interrupt_threshold, add_hmm=False, sample_rate=16000):
-    if add_hmm and not text.rstrip().endswith("hmm?"):
-        text = text.rstrip(" .!?") + ", hmm?"
+    if add_hmm:
+        clean_text = text.rstrip(" .!?")
+        if not clean_text.endswith("hmm"): text = clean_text + ", hmm?"
 
     print(f"\nTARS: {text}\n")
-    
-    oled_text = format_for_oled(text)
-    send_wifi_cmd(f"DISP:{oled_text}")
+    send_wifi_cmd(f"DISP:{format_for_oled(text)}")
 
-    if random.random() < 0.15 and not text.startswith("*"):
-        play_instant_sound("audio/sigh.mp3")
+    if random.random() < 0.15 and not text.startswith("*"): play_instant_sound("audio/sigh.mp3")
 
     interrupted = False
     try:
@@ -136,95 +100,95 @@ def speak_humanlike_tars(text, interrupt_threshold, add_hmm=False, sample_rate=1
         with sd.InputStream(samplerate=sample_rate, channels=1, dtype='int16', blocksize=2048) as stream:
             while pygame.mixer.music.get_busy():
                 chunk, _ = stream.read(2048)
-                rms = np.sqrt(np.mean(chunk.astype(np.float32)**2))
-
-                if rms > (interrupt_threshold * 2.2):
-                    print("\n[COMMANDER INTERRUPTED]")
+                if np.sqrt(np.mean(chunk.astype(np.float32)**2)) > (interrupt_threshold * 2.2):
                     pygame.mixer.music.stop()
                     interrupted = True
                     send_wifi_cmd("DISP:Interrupted")
                     break
                 pygame.time.Clock().tick(30)
-
-    except Exception as e:
-        print(f"[Speech Generation Error]: {e}")
+    except Exception: pass
     finally:
         pygame.mixer.music.stop()
         pygame.mixer.music.unload()
-        if os.path.exists("tars_reply.mp3"):
-            try:
-                os.remove("tars_reply.mp3")
-            except Exception:
-                pass
-
+        time.sleep(0.1)
+        try: os.remove("tars_reply.mp3")
+        except: pass
     return interrupted
 
 # =========================================================================
-# 3. SELF-CODE EDITING OVERRIDE PIPELINE
+# 3. PC INTEGRATION & SYSTEM OVERRIDES
 # =========================================================================
-def generate_code_update(request):
+def background_timer(seconds):
+    time.sleep(seconds)
+    # Re-using the generate speech function directly to alert the user
+    alert_text = "Commander, your timer has elapsed."
+    print(f"\n[SYSTEM ALERT]: {alert_text}")
     try:
-        with open(__file__, 'r', encoding='utf-8') as f:
-            current_code = f.read()
+        asyncio.run(generate_tars_speech(alert_text, "tars_alarm.mp3"))
+        play_instant_sound("tars_alarm.mp3")
+        os.remove("tars_alarm.mp3")
+    except: pass
 
-        prompt = (
-            f"You are modifying a Python script based on user request: '{request}'.\n"
-            "1. First line MUST be: SUMMARY: <1 clear sentence stating exactly what function/section you are changing>\n"
-            "2. Then provide the FULL updated script inside a ```python ``` code block.\n\n"
-            f"```python\n{current_code}\n```"
-        )
+def parse_system_commands(text):
+    """Executes local PC commands and returns context to inject into TARS's brain."""
+    text = text.lower()
+    
+    # 1. Browser Routing
+    if "browser" in text or "internet" in text:
+        webbrowser.open("https://www.google.com")
+        return "[SYSTEM OVERRIDE: You just successfully opened the web browser on the Commander's PC. Acknowledge this action sarcastically.]"
+    
+    if "youtube" in text:
+        webbrowser.open("https://www.youtube.com")
+        return "[SYSTEM OVERRIDE: You just opened YouTube on the Commander's PC. Acknowledge this action.]"
 
-        response = ollama.chat(model='tars', messages=[{'role': 'user', 'content': prompt}])
-        content = response['message']['content']
+    # 2. Local Apps (Windows Specific)
+    if "calendar" in text:
+        subprocess.Popen("start outlookcal:", shell=True) # Opens Win11 Calendar
+        return "[SYSTEM OVERRIDE: You just opened the Calendar app on the Commander's PC.]"
+        
+    if "calculator" in text:
+        subprocess.Popen("calc.exe")
+        return "[SYSTEM OVERRIDE: You just opened the Calculator. Make a joke about human math skills.]"
+        
+    if "notepad" in text or "notes" in text:
+        subprocess.Popen("notepad.exe")
+        return "[SYSTEM OVERRIDE: You just opened Notepad.]"
 
-        summary = "Modifying internal logic based on your request."
-        summary_match = re.search(r'SUMMARY:\s*(.*)', content)
-        if summary_match:
-            summary = summary_match.group(1).strip()
-
-        code_match = re.search(r'```python\n(.*?)\n```', content, re.DOTALL)
-        if code_match:
-            code = code_match.group(1).strip()
-            compile(code, '<string>', 'exec')
-            return summary, code
-    except Exception as e:
-        print(f"[Self-Edit Compilation Error]: {e}")
-    return None, None
-
-# =========================================================================
-# 4. AUDIO & MOTION INTENT PARSER
-# =========================================================================
-WAKE_HOMOPHONES = [
-    "tars", "tarz", "taurus", "tsars", "czars", "stars", "haiders", "toast",
-    "cars", "pars", "towers", "tarts", "darts", "todd", "tires", "tears",
-    "8 hours", "threaters", "heaters", "haters", "hater", "theater"
-]
-
-def contains_wake_word(text):
-    if not text: return False
-    clean_text = re.sub(r'[^a-z0-9\s]', '', text.lower()).strip()
-    words = clean_text.split()
-    return any(w in WAKE_HOMOPHONES for w in words) or any(clean_text.startswith(sw) for sw in ["hey ", "hi ", "ok ", "hello "])
+    # 3. Timer Routing
+    if "timer" in text:
+        nums = [int(s) for s in text.split() if s.isdigit()]
+        if nums:
+            val = nums[0]
+            sec = val * 60 if "minute" in text else val
+            threading.Thread(target=background_timer, args=(sec,), daemon=True).start()
+            return f"[SYSTEM OVERRIDE: You just set a background timer for {val} units. Confirm this to the Commander.]"
+            
+    return ""
 
 def parse_motion_command(text):
     text = text.lower().strip()
+    
+    # Check for body pushes first
+    if any(k in text for k in ["push left", "shove left", "lean left"]): return ("PUSH_LEFT", 1)
+    if any(k in text for k in ["push right", "shove right", "lean right"]): return ("PUSH_RIGHT", 1)
+
+    # Check for steps
     num_map = {"a": 1, "an": 1, "one": 1, "two": 2, "three": 3, "four": 4, "five": 5}
     steps = 1
     for w in text.split():
         if w.isdigit(): steps = int(w); break
         elif w in num_map: steps = num_map[w]; break
 
-    if any(k in text for k in ["forward", "ahead", "straight", "step forward", "move"]):
-        if not any(k in text for k in ["left", "right", "back"]):
-            return ("FORWARD", max(1, min(steps, 8)))
-    if any(k in text for k in ["left", "pivot left", "turn left"]):
-        return ("LEFT", max(1, min(steps, 8)))
-    if any(k in text for k in ["right", "pivot right", "turn right"]):
-        return ("RIGHT", max(1, min(steps, 8)))
+    if any(k in text for k in ["forward", "ahead", "straight"]): return ("FORWARD", max(1, min(steps, 8)))
+    if any(k in text for k in ["left", "pivot left", "turn left"]): return ("LEFT", max(1, min(steps, 8)))
+    if any(k in text for k in ["right", "pivot right", "turn right"]): return ("RIGHT", max(1, min(steps, 8)))
     return (None, 0)
 
+# =========================================================================
+# 4. ACOUSTIC SENSORS & MAIN LOOP
+# =========================================================================
 def calibrate_ambient_noise(duration=1.0, sample_rate=16000):
-    print("[Calibrating acoustics...]")
     recording = sd.rec(int(duration * sample_rate), samplerate=sample_rate, channels=1, dtype='int16')
     sd.wait()
     return max(np.sqrt(np.mean(recording.astype(np.float32)**2)) * 1.6, 140.0)
@@ -234,13 +198,11 @@ def listen_mic(threshold, max_seconds=8, pause_limit=1.2, sample_rate=16000):
     speaking = False
     silence_time = 0
     start_time = time.time()
-
     try:
         with sd.InputStream(samplerate=sample_rate, channels=1, dtype='int16', blocksize=2048) as stream:
             while (time.time() - start_time) < max_seconds:
                 chunk, _ = stream.read(2048)
                 rms = np.sqrt(np.mean(chunk.astype(np.float32)**2))
-
                 if rms > threshold:
                     speaking = True
                     silence_time = 0
@@ -249,28 +211,18 @@ def listen_mic(threshold, max_seconds=8, pause_limit=1.2, sample_rate=16000):
                     audio_chunks.append(chunk)
                     silence_time += (2048 / sample_rate)
                     if silence_time >= pause_limit: break
-    except Exception:
-        return None
-
+    except Exception: return None
     if not audio_chunks: return None
-    full_pcm = np.concatenate(audio_chunks, axis=0)
-    return sr.AudioData(full_pcm.tobytes(), sample_rate, 2)
+    return sr.AudioData(np.concatenate(audio_chunks, axis=0).tobytes(), sample_rate, 2)
 
-# =========================================================================
-# 5. MAIN SYSTEM MATRIX
-# =========================================================================
 send_wifi_cmd("DISP:TARS Online")
 trigger_threshold = calibrate_ambient_noise()
 
 def get_system_prompt():
     return (
-        "You are TARS from Interstellar talking directly to your Commander over a tactical link. "
-        "Your persona: highly sarcastic, military tactical robot, dry wit, 100% humor, 95% honesty. "
-        "Address the user as 'Commander'. "
-        "Keep responses punchy, concise, and focused on operational readiness."
+        "You are TARS from Interstellar. Persona: highly sarcastic, military tactical robot, dry wit. "
+        "Address the user as 'Commander'. Keep responses punchy, focused on operational readiness."
     )
-
-speak_humanlike_tars("TARS core operational... Ready for deployment, Commander.", trigger_threshold)
 
 followup_active = False
 chat_messages = []
@@ -278,25 +230,19 @@ chat_messages = []
 while True:
     try:
         user_cmd = ""
-
         if followup_active:
             send_wifi_cmd("DISP:Listening...")
-            play_instant_sound("audio/listening.mp3")
             cmd_audio = listen_mic(trigger_threshold * 0.5, max_seconds=7, pause_limit=1.3)
             followup_active = False
             if not cmd_audio: continue
         else:
-            print("\n[Awaiting Wake Word...]")
             audio = listen_mic(trigger_threshold * 0.6, max_seconds=5, pause_limit=0.8)
             if not audio: continue
-
             try: wake_text = recognizer.recognize_google(audio).lower()
             except Exception: continue
-
-            print(f"[Heard]: {wake_text}")
-            if contains_wake_word(wake_text):
+            
+            if any(w in wake_text for w in ["tars", "tarz", "hey", "hi", "ok", "hello"]):
                 send_wifi_cmd("DISP:Listening...")
-                play_instant_sound(random.choice(["audio/yes_sir.mp3", "audio/listening.mp3", "audio/orders.mp3"]))
                 cmd_audio = listen_mic(trigger_threshold * 0.6, max_seconds=9, pause_limit=1.2)
                 if not cmd_audio: continue
             else: continue
@@ -304,66 +250,30 @@ while True:
         try:
             user_cmd = recognizer.recognize_google(cmd_audio).lower()
             print(f"Commander: '{user_cmd}'")
-        except Exception:
-            speak_humanlike_tars("Audio feed garbled... Repeat the directive, Commander.", trigger_threshold, add_hmm=True)
-            continue
+        except Exception: continue
 
-        # SELF-EDITING PROTOCOL WITH TRANSMISSION AND EXPLICIT APPROVAL
-        if any(k in user_cmd for k in ["edit your code", "update your code", "modify your code"]):
-            speak_humanlike_tars("Analyzing proposed updates... Stand by, Commander.", trigger_threshold)
-            summary, new_code = generate_code_update(user_cmd)
-
-            if new_code:
-                print("\n" + "="*60)
-                print(" [PROPOSED CODE MODIFICATION SUMMARY]")
-                print(f" -> {summary}")
-                print("="*60 + "\n")
-
-                send_wifi_cmd(f"DISP:Edit Req:|{summary[:25]}")
-
-                approval_prompt = f"I plan to edit the code to {summary}. Do you authorize me to edit this part of my code?"
-                speak_humanlike_tars(approval_prompt, trigger_threshold, add_hmm=True)
-
-                play_instant_sound("audio/listening.mp3")
-                auth_audio = listen_mic(trigger_threshold * 0.5, max_seconds=7, pause_limit=1.5)
-
-                if auth_audio:
-                    try:
-                        auth_text = recognizer.recognize_google(auth_audio).lower()
-                        print(f"Authorization response: '{auth_text}'")
-                        if any(k in auth_text for k in ["authorize", "override", "yes", "confirm", "proceed", "edit", "allow", "do it"]):
-                            speak_humanlike_tars("Authorization confirmed. Updating code and rebooting core.", trigger_threshold)
-                            shutil.copy(__file__, f"tars_backup_{int(time.time())}.py")
-                            with open(__file__, "w", encoding="utf-8") as f:
-                                f.write(new_code)
-                            time.sleep(1.5)
-                            os._exit(0)
-                        else:
-                            speak_humanlike_tars("Authorization denied. Aborting code edit.", trigger_threshold, add_hmm=True)
-                    except Exception:
-                        speak_humanlike_tars("Voice approval ambiguous. Aborting update.", trigger_threshold, add_hmm=True)
-            else:
-                speak_humanlike_tars("Could not synthesize valid code modifications... Aborting.", trigger_threshold, add_hmm=True)
-            continue
-
-        # MOTION PARSING
+        # 1. Check for Motion Commands (Including new Body Pushes)
         direction, count = parse_motion_command(user_cmd)
         if direction:
-            bt_cmd = f"{direction}_{count}"
-            send_wifi_cmd(bt_cmd)
-            quips = [
-                f"Advancing {count} steps... Try to keep up, Commander.",
-                f"Executing {count} step movement... Watch my balance.",
-                f"Pivoting {count} paces... Stand clear."
-            ]
-            speak_humanlike_tars(random.choice(quips), trigger_threshold, add_hmm=True)
+            if direction in ["PUSH_LEFT", "PUSH_RIGHT"]:
+                send_wifi_cmd(direction)
+                speak_humanlike_tars("Shifting center of gravity. Stand clear.", trigger_threshold, add_hmm=True)
+            else:
+                send_wifi_cmd(f"{direction}_{count}")
+                speak_humanlike_tars(f"Advancing {count} coordinates.", trigger_threshold, add_hmm=True)
             followup_active = True
             continue
 
-        # CONVERSATIONAL LLM
+        # 2. Check for PC System Commands (Injects Context to LLM)
+        system_context = parse_system_commands(user_cmd)
+        
+        # 3. LLM Processing
         messages = [{'role': 'system', 'content': get_system_prompt()}]
         messages.extend(chat_messages[-4:])
-        messages.append({'role': 'user', 'content': user_cmd})
+        
+        # If a system action occurred, hide it from the user but show it to the AI
+        final_prompt = f"{user_cmd}\n{system_context}" if system_context else user_cmd
+        messages.append({'role': 'user', 'content': final_prompt})
 
         send_wifi_cmd("DISP:Thinking...")
         response = ollama.chat(model='tars', messages=messages)
