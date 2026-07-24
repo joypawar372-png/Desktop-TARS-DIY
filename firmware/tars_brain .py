@@ -20,7 +20,7 @@ import sys
 # 1. WIRELESS SOCKET MATRIX (NO COM PORTS)
 # =========================================================================
 # Set ESP32_IP to your ESP32's IP address displayed on serial monitor or OLED
-ESP32_IP = '192.168.1.100'  # e.g., '192.168.4.1' if using TARS AP Mode
+ESP32_IP = '192.168.1.126'  # e.g., '192.168.4.1' if using TARS AP Mode
 ESP32_PORT = 8888
 
 tcp_client = None
