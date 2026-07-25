@@ -1,100 +1,191 @@
-You can run this locally using Ollama (free, offline, and runs locally on your laptop).
-
-Make sure Ollama is running on your laptop (ollama run llama3.2 or mistral or phi3).
-
-Install the requests library in PowerShell if you haven't already:
-
-PowerShell
-python -m pip install requests
-Updated AI-Powered Script (tars_ai_brain.py)
-This script takes your voice input, sends it to your local Ollama AI model with TARS's persona, and speaks the reply back to you.
-
-Python
-import sounddevice as sd
-import speech_recognition as sr
-import pyttsx3
+import os
+import time
+import re
+import threading
 import requests
 import json
+import pygame
+import speech_recognition as sr
+import edge_tts
+import asyncio
+from openai import OpenAI
 
-# --- 1. VOICE SYNTHESIS SETUP ---
-engine = pyttsx3.init()
-engine.setProperty('rate', 165)  # Speech speed
+# --- Configuration ---
+OPENAI_API_KEY = "YOUR_OPENAI_API_KEY"
+ESP32_IP = "http://192.168.X.X/command" # Replace with your ESP32's IP
+client = OpenAI(api_key=OPENAI_API_KEY)
 
-def tars_speak(text):
-    print(f"\nTARS: {text}\n")
-    engine.say(text)
-    engine.runAndWait()
+# Initialize Pygame Mixer for interruptible audio
+pygame.mixer.init()
 
-# --- 2. AUDIO RECORDING SETUP ---
-def listen_laptop_mic(duration=4, samplerate=16000):
-    print("\n[Listening... Speak now!]")
-    audio_data = sd.rec(int(duration * samplerate), samplerate=samplerate, channels=1, dtype='int16')
-    sd.wait()
-    
-    audio_bytes = audio_data.tobytes()
-    return sr.AudioData(audio_bytes, samplerate, 2)
+# The fuzzy list of wake words
+WAKE_WORDS = [
+    "tars", "tarz", "theatres", "tar", "hey", "wake up", 
+    "tarus", "taruses", "tharus", "taras", "paras", "cars"
+]
+STOP_WORDS = ["stop", "pause"]
 
-# --- 3. OLLAMA AI BRAIN FUNCTION ---
-TARS_SYSTEM_PROMPT = (
-    "You are TARS, the tactical robot from Interstellar. "
-    "Your personality is direct, logical, dryly sarcastic, and witty. "
-    "Your humor setting is at 75%. "
-    "CRITICAL RULE: Keep all answers extremely short and concise (1 to 2 sentences max) "
-    "so that they can be quickly spoken via Text-to-Speech. Do not use emojis or special markdown formatting."
-)
+# Global flags
+is_speaking = False
+stop_speaking_flag = False
 
-def query_tars_ai(user_prompt):
-    url = "http://localhost:11434/api/chat"
-    
-    payload = {
-        "model": "llama3.2",  # Replace with 'mistral', 'phi3', or whichever model you have pulled in Ollama
-        "messages": [
-            {"role": "system", "content": TARS_SYSTEM_PROMPT},
-            {"role": "user", "content": user_prompt}
-        ],
-        "stream": False
+# --- TARS Personality Prompt ---
+SYSTEM_PROMPT = """
+You are TARS, a former US Marine tactical robot from Interstellar. 
+Your humor setting is at 75%. You are witty, sarcastic, and highly intelligent, but ultimately helpful.
+CRITICAL RULE: Speak entirely in natural language. Do NOT use stage directions, asterisks, or actions like *sigh* or *dramatic pause*. Just provide the spoken text.
+If the user asks you to move (e.g., 'move 1 step forward then 2 steps left'), use the execute_movements tool to translate that into action, and acknowledge it verbally.
+"""
+
+# --- Function Calling Schema for OpenAI ---
+tools = [
+    {
+        "type": "function",
+        "function": {
+            "name": "execute_movements",
+            "description": "Send a sequence of movement commands to TARS's physical body.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "sequence": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "direction": {"type": "string", "enum": ["forward", "backward", "left", "right"]},
+                                "steps": {"type": "integer"}
+                            },
+                            "required": ["direction", "steps"]
+                        }
+                    }
+                },
+                "required": ["sequence"]
+            }
+        }
     }
-    
-    try:
-        response = requests.post(url, json=payload, timeout=10)
-        if response.status_code == 200:
-            result = response.json()
-            return result.get("message", {}).get("content", "My data processing unit glitched.")
-        else:
-            return "Local AI service returned an error."
-    except Exception as e:
-        return "I cannot reach my core AI memory. Is Ollama running?"
+]
 
-# --- 4. MAIN INTERACTIVE LOOP ---
-recognizer = sr.Recognizer()
-tars_speak("TARS artificial intelligence online. Humor set to 75 percent.")
-
-while True:
-    try:
-        audio = listen_laptop_mic(duration=5)
-        user_text = recognizer.recognize_google(audio)
-        print(f"You: {user_text}")
-
-        # Simple exit trigger
-        if "shutdown" in user_text.lower() or "goodbye" in user_text.lower():
-            tars_speak("Going into standby mode. Don't leave me in the wormhole.")
-            break
-
-        # Query the AI model
-        print("[Thinking...]")
-        ai_response = query_tars_ai(user_text)
+def send_to_esp32(text=None, sequence=None):
+    """Sends JSON payload to ESP32"""
+    payload = {}
+    if text:
+        payload["text"] = text
+    if sequence:
+        payload["sequence"] = sequence
         
-        # Speak the AI response
-        tars_speak(ai_response)
+    try:
+        requests.post(ESP32_IP, json=payload, timeout=2)
+    except requests.exceptions.RequestException as e:
+        print(f"ESP32 Connection Error: {e}")
 
-    except sr.UnknownValueError:
-        # Ignore silence / unintelligible background noise
-        pass
-    except Exception as e:
-        print(f"Error: {e}")
-How It Works
-Personality Tuning: The TARS_SYSTEM_PROMPT enforces a 1-2 sentence limit, which prevents the AI from giving long-winded paragraphs that take forever for pyttsx3 to read aloud.
+async def generate_speech(text, filename="response.mp3"):
+    """Generates high-quality TTS using Edge-TTS"""
+    # GuyNeural is a good deep voice. Adjust pitch for TARS effect.
+    communicate = edge_tts.Communicate(text, "en-US-GuyNeural", pitch="-10Hz", rate="+5%")
+    await communicate.save(filename)
 
-Local Latency: Using a lightweight local model like llama3.2 or phi3 keeps response times down to 1–2 seconds.
+def play_audio(filename):
+    """Plays audio in a way that can be interrupted by a wake word."""
+    global is_speaking, stop_speaking_flag
+    is_speaking = True
+    stop_speaking_flag = False
+    
+    pygame.mixer.music.load(filename)
+    pygame.mixer.music.play()
+    
+    while pygame.mixer.music.get_busy():
+        if stop_speaking_flag:
+            pygame.mixer.music.stop()
+            break
+        time.sleep(0.1)
+        
+    is_speaking = False
 
-Extensibility: When you connect your ESP32 or Arduino over USB later, you can have Python check the sentiment/intent of the AI reply and send matching movement commands (e.g., nod, tilt, wave) directly to TARS's leg servos while it speaks!
+def process_command(transcription):
+    """Sends user command to OpenAI and handles response/movements."""
+    print(f"User: {transcription}")
+    
+    messages = [
+        {"role": "system", "content": SYSTEM_PROMPT},
+        {"role": "user", "content": transcription}
+    ]
+    
+    response = client.chat.completions.create(
+        model="gpt-4o",
+        messages=messages,
+        tools=tools,
+        tool_choice="auto"
+    )
+    
+    response_message = response.choices[0].message
+    
+    # Check if OpenAI decided to call the movement tool
+    if response_message.tool_calls:
+        for tool_call in response_message.tool_calls:
+            if tool_call.function.name == "execute_movements":
+                args = json.loads(tool_call.function.arguments)
+                print(f"[ACTION] Sending sequence to ESP32: {args['sequence']}")
+                send_to_esp32(sequence=args['sequence'])
+    
+    # Get the text response to speak
+    reply_text = response_message.content
+    if not reply_text:
+        reply_text = "Executing."
+        
+    print(f"TARS: {reply_text}")
+    send_to_esp32(text=reply_text[:20]) # Send a short snippet to OLED
+    
+    # Generate and play audio
+    asyncio.run(generate_speech(reply_text))
+    play_audio("response.mp3")
+
+def audio_listener_loop():
+    """Background loop listening for wake words and commands."""
+    global is_speaking, stop_speaking_flag
+    
+    recognizer = sr.Recognizer()
+    recognizer.energy_threshold = 300
+    recognizer.dynamic_energy_threshold = True
+
+    with sr.Microphone() as source:
+        print("TARS is online and listening...")
+        while True:
+            try:
+                # Listen in short chunks to catch interruptions quickly
+                audio = recognizer.listen(source, timeout=1, phrase_time_limit=5)
+                # Use Google's free STT for fast, local-ish wake word detection
+                text = recognizer.recognize_google(audio).lower()
+                
+                # Check for Wake Words or Stop Words
+                is_wake_word = any(re.search(r'\b' + w + r'\b', text) for w in WAKE_WORDS)
+                is_stop_word = any(re.search(r'\b' + w + r'\b', text) for w in STOP_WORDS)
+                
+                if is_wake_word or is_stop_word:
+                    if is_speaking:
+                        # Interrupt TARS mid-sentence
+                        stop_speaking_flag = True
+                        time.sleep(0.2) # Wait for thread to halt
+                        if not is_stop_word:
+                            # TARS says "Yes?" when barged-in upon
+                            asyncio.run(generate_speech("Yes?"))
+                            play_audio("response.mp3")
+                            print("TARS interrupted. Listening for new command...")
+                    else:
+                        # Standard wake up
+                        asyncio.run(generate_speech("Yes?"))
+                        play_audio("response.mp3")
+                        
+                    # Now listen for the actual command
+                    audio = recognizer.listen(source, timeout=5, phrase_time_limit=10)
+                    command = recognizer.recognize_google(audio)
+                    threading.Thread(target=process_command, args=(command,)).start()
+
+            except sr.WaitTimeoutError:
+                continue # Normal timeout, loop again
+            except sr.UnknownValueError:
+                continue # Muffled noise, ignore
+            except Exception as e:
+                print(f"Listening error: {e}")
+
+if __name__ == "__main__":
+    audio_listener_loop()
