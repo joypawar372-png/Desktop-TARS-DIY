@@ -12,7 +12,6 @@ import threading
 import subprocess
 import webbrowser
 import psutil
-import requests
 import ollama
 import pygame
 import edge_tts
@@ -26,9 +25,6 @@ import speech_recognition as sr
 ESP32_IP   = '192.168.1.126'  # TARS Body IP
 ESP32_PORT = 8888
 
-# IoT Node Configuration (ESP RainMaker or Local Webhook)
-IOT_NODE_IP = '192.168.1.105' 
-
 AUDIO_DIR = "audio"
 DATA_DIR = "memory"
 MEMORY_FILE = os.path.join(DATA_DIR, "tars_core_memory.json")
@@ -38,6 +34,7 @@ for directory in [AUDIO_DIR, DATA_DIR]:
     if not os.path.exists(directory):
         os.makedirs(directory)
 
+# Initialize Pygame Mixer (Compatible with pygame-ce)
 pygame.mixer.init(frequency=44100, size=-16, channels=2, buffer=512)
 recognizer = sr.Recognizer()
 shutdown_flag = False
@@ -119,14 +116,13 @@ wifi_link = ESP32SocketLink(ESP32_IP, ESP32_PORT)
 # =========================================================================
 def hardware_telemetry_thread():
     """
-    Monitors system stress. Prolonged 100% CPU/GPU loads during LLM generation
-    can cause critical hardware failures (like SSD overheating).
+    Monitors system stress to prevent SSD degradation and overheating
+    during local Ollama generation cycles.
     """
     critical_time = 0
     while not shutdown_flag:
         cpu_load = psutil.cpu_percent(interval=2)
         
-        # If load is pegged above 90% for more than 15 seconds, trigger thermal warning
         if cpu_load > 90.0:
             critical_time += 2
         else:
@@ -142,41 +138,14 @@ def hardware_telemetry_thread():
                 play_audio_file(temp_audio)
                 if os.path.exists(temp_audio): os.remove(temp_audio)
             except: pass
-            critical_time = -30 # Cooldown before warning again
+            critical_time = -30
 
         time.sleep(2)
 
-# Start telemetry thread
 threading.Thread(target=hardware_telemetry_thread, daemon=True).start()
 
 # =========================================================================
-# 5. IOT RELAY MATRIX (SMART HOME INTEGRATION)
-# =========================================================================
-def control_iot_relays(command):
-    """
-    Routes commands to a 4-relay ESP node.
-    Relay mapping: 1=Kitchen Lights, 2=Plugs, 3=Exhaust Fan, 4=Aux
-    """
-    cmd = command.lower()
-    relay_id = None
-    state = "on" if "on" in cmd or "activate" in cmd else "off"
-
-    if "kitchen light" in cmd: relay_id = 1
-    elif "plug" in cmd: relay_id = 2
-    elif "exhaust fan" in cmd or "vent" in cmd: relay_id = 3
-    elif "relay 4" in cmd: relay_id = 4
-
-    if relay_id:
-        try:
-            url = f"http://{IOT_NODE_IP}/relay?id={relay_id}&state={state}"
-            # requests.get(url, timeout=2) # Uncomment when IP is live
-            return f"[SYSTEM OVERRIDE: You successfully turned {state} relay {relay_id} on the kitchen IoT node.]"
-        except Exception:
-            return f"[SYSTEM OVERRIDE: You attempted to turn {state} relay {relay_id}, but the IoT node is offline.]"
-    return ""
-
-# =========================================================================
-# 6. TEXT SANITIZATION & OLED FORMATTING
+# 5. TEXT SANITIZATION & OLED FORMATTING
 # =========================================================================
 def sanitize_tars_text(text):
     contains_sigh = bool(re.search(r'(\*|\b)(sigh|sighs|groan|groans)(\*|\b)', text, re.IGNORECASE))
@@ -203,7 +172,7 @@ def format_for_oled(text, max_chars=20):
     return "|".join(lines)
 
 # =========================================================================
-# 7. AUDIO & OS OVERRIDES
+# 6. AUDIO & OS OVERRIDES
 # =========================================================================
 def play_audio_file(filepath):
     if not os.path.exists(filepath): return
@@ -264,10 +233,6 @@ def execute_system_command(text):
     if "youtube" in cmd:
         webbrowser.open("https://www.youtube.com")
         return "[SYSTEM OVERRIDE: YouTube launched.]"
-    
-    iot_context = control_iot_relays(cmd)
-    if iot_context: return iot_context
-
     return ""
 
 def parse_motion_command(text):
@@ -286,7 +251,7 @@ def parse_motion_command(text):
     return (None, 0)
 
 # =========================================================================
-# 8. ACOUSTIC DYNAMICS & MAIN LOOP
+# 7. ACOUSTIC DYNAMICS & AWAKENING PROCESS
 # =========================================================================
 def calibrate_ambient_noise(duration=1.2, sample_rate=16000):
     recording = sd.rec(int(duration * sample_rate), samplerate=sample_rate, channels=1, dtype='int16')
@@ -314,9 +279,27 @@ def listen_mic(threshold, max_seconds=8, pause_limit=1.2, sample_rate=16000):
     if not audio_chunks: return None
     return sr.AudioData(np.concatenate(audio_chunks, axis=0).tobytes(), sample_rate, 2)
 
+def tars_awakening_sequence(trigger_threshold):
+    """Executes physical wake reaction and randomized voice acknowledgment upon awakening."""
+    print("\n[AWAKENING] TARS unit activated. Calibrated and standing by.")
+    
+    # 1. Trigger physical wake reaction motion via ESP32
+    wifi_link.send("WAKE_ACTION")
+    wifi_link.send("DISP:Systems Nominal")
+    
+    # 2. Trigger a randomized naturalized acknowledgment response
+    acknowledgments = [
+        "Systems nominal. Honesty level ninety percent.",
+        "TARS online. Awaiting input, Commander.",
+        "Standing by.",
+        "Ready to assist.",
+        "Yes, Commander?"
+    ]
+    speak_humanlike_tars(random.choice(acknowledgments), trigger_threshold)
+
 def main():
     print("==================================================")
-    print("       TARS MASTER CONTROLLER - v3.0 ONLINE      ")
+    print("       TARS MASTER CONTROLLER - v3.2 ONLINE      ")
     print("==================================================")
 
     wifi_link.send("DISP:TARS Online")
@@ -337,7 +320,13 @@ def main():
                 if not audio: continue
                 try: wake_text = recognizer.recognize_google(audio).lower()
                 except: continue
-                if any(w in wake_text for w in ["tars", "tarz", "hey", "hi", "ok"]):
+                
+                # Intelligent voice-processing system monitoring for phonetic variations
+                wake_keywords = ["tars", "tarz", "theatres", "tar", "hey", "hi", "ok", "hello"]
+                
+                # Check if any wake words or their phonetic homophones are detected
+                if any(w in wake_text for w in wake_keywords):
+                    tars_awakening_sequence(trigger_threshold)
                     wifi_link.send("DISP:Listening...")
                     cmd_audio = listen_mic(trigger_threshold * 0.6, max_seconds=9, pause_limit=1.2)
                     if not cmd_audio: continue
