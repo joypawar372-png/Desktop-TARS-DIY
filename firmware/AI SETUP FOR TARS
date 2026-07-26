@@ -1,191 +1,412 @@
-import os
-import time
-import re
-import threading
-import requests
-import json
-import pygame
-import speech_recognition as sr
-import edge_tts
+Set-Content -Path "tars_master.py" -Encoding UTF8 -Value @'
 import asyncio
-from openai import OpenAI
+import os
+import re
+import sys
+import time
+import json
+import random
+import socket
+import signal
+import sqlite3
+import threading
+import webbrowser
+import urllib.parse
+import psutil
+import ollama
+import pygame
+import edge_tts
+import numpy as np
+import sounddevice as sd
+import speech_recognition as sr
 
-# --- Configuration ---
-OPENAI_API_KEY = "YOUR_OPENAI_API_KEY"
-ESP32_IP = "http://192.168.X.X/command" # Replace with your ESP32's IP
-client = OpenAI(api_key=OPENAI_API_KEY)
+# =========================================================================
+# 1. GLOBAL CONFIGURATION
+# =========================================================================
+ESP32_IP   = '192.168.1.126'
+ESP32_PORT = 8888
+OLLAMA_MODEL = 'llama3.2'  
 
-# Initialize Pygame Mixer for interruptible audio
-pygame.mixer.init()
+AUDIO_DIR = "audio"
+DATA_DIR = "memory"
+MEMORY_FILE = os.path.join(DATA_DIR, "tars_core_memory.json")
+DB_FILE = os.path.join(DATA_DIR, "tars_data.db")
 
-# The fuzzy list of wake words
-WAKE_WORDS = [
-    "tars", "tarz", "theatres", "tar", "hey", "wake up", 
-    "tarus", "taruses", "tharus", "taras", "paras", "cars"
-]
-STOP_WORDS = ["stop", "pause"]
+SIGH_SOUND_PATH = os.path.join(AUDIO_DIR, "sigh.mp3")
+YES_SOUND_PATH = os.path.join(AUDIO_DIR, "yes.mp3")
+INIT_SOUND_PATH = os.path.join(AUDIO_DIR, "init.mp3")
+READY_SOUND_PATH = os.path.join(AUDIO_DIR, "ready.mp3")
 
-# Global flags
-is_speaking = False
-stop_speaking_flag = False
+for directory in [AUDIO_DIR, DATA_DIR]:
+    if not os.path.exists(directory):
+        os.makedirs(directory)
 
-# --- TARS Personality Prompt ---
-SYSTEM_PROMPT = """
-You are TARS, a former US Marine tactical robot from Interstellar. 
-Your humor setting is at 75%. You are witty, sarcastic, and highly intelligent, but ultimately helpful.
-CRITICAL RULE: Speak entirely in natural language. Do NOT use stage directions, asterisks, or actions like *sigh* or *dramatic pause*. Just provide the spoken text.
-If the user asks you to move (e.g., 'move 1 step forward then 2 steps left'), use the execute_movements tool to translate that into action, and acknowledge it verbally.
-"""
+pygame.mixer.init(frequency=44100, size=-16, channels=2, buffer=512)
+recognizer = sr.Recognizer()
+shutdown_flag = False
 
-# --- Function Calling Schema for OpenAI ---
-tools = [
+def sigint_handler(sig, frame):
+    global shutdown_flag
+    print("\n[SYSTEM] Initiating TARS shutdown sequence...")
+    shutdown_flag = True
+    sys.exit(0)
+signal.signal(signal.SIGINT, sigint_handler)
+
+# Initialize Database for Reminders & Calendar
+conn = sqlite3.connect(DB_FILE, check_same_thread=False)
+cursor = conn.cursor()
+cursor.execute('''CREATE TABLE IF NOT EXISTS reminders (id INTEGER PRIMARY KEY, task TEXT, time_str TEXT)''')
+cursor.execute('''CREATE TABLE IF NOT EXISTS calendar (id INTEGER PRIMARY KEY, event TEXT, date_str TEXT)''')
+conn.commit()
+
+# =========================================================================
+# 2. AUDIO GENERATION ENGINE
+# =========================================================================
+async def generate_tars_speech(text, file_path="tars_reply.mp3"):
+    tts = edge_tts.Communicate(text=text, voice="en-US-ChristopherNeural", pitch="-2Hz", rate="+0%")
+    await tts.save(file_path)
+
+def pre_generate_audio():
+    print("[SYSTEM] Verifying core audio files...")
+    if not os.path.exists(YES_SOUND_PATH): asyncio.run(generate_tars_speech("Yes?", YES_SOUND_PATH))
+    if not os.path.exists(INIT_SOUND_PATH): asyncio.run(generate_tars_speech("TARS system initiated. Calibrating acoustic sensors. Please remain quiet.", INIT_SOUND_PATH))
+    if not os.path.exists(READY_SOUND_PATH): asyncio.run(generate_tars_speech("Calibration complete. Systems nominal and standing by.", READY_SOUND_PATH))
+
+def play_audio_file(filepath):
+    if not os.path.exists(filepath): return
+    try:
+        pygame.mixer.music.load(filepath)
+        pygame.mixer.music.play()
+        while pygame.mixer.music.get_busy(): pygame.time.Clock().tick(20)
+        pygame.mixer.music.unload()
+    except Exception: pass
+
+# =========================================================================
+# 3. MEMORY & HARDWARE LINKS
+# =========================================================================
+def load_memory():
+    if os.path.exists(MEMORY_FILE):
+        try:
+            with open(MEMORY_FILE, 'r') as f: return json.load(f)
+        except: return []
+    return []
+
+def save_memory(chat_history):
+    with open(MEMORY_FILE, 'w') as f:
+        json.dump(chat_history[-20:], f, indent=4)
+
+class ESP32SocketLink:
+    def __init__(self, ip, port):
+        self.ip = ip; self.port = port; self.client = None; self.lock = threading.Lock()
+        self.connect()
+
+    def connect(self):
+        with self.lock:
+            try:
+                self.client = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                self.client.settimeout(2.0)
+                self.client.connect((self.ip, self.port))
+            except Exception:
+                self.client = None
+
+    def send(self, cmd):
+        clean_cmd = cmd.replace('\r', '').replace('\n', '|') + "\r\n"
+        with self.lock:
+            if not self.client: return
+            try: self.client.sendall(clean_cmd.encode('utf-8'))
+            except: pass
+
+wifi_link = ESP32SocketLink(ESP32_IP, ESP32_PORT)
+
+# =========================================================================
+# 4. TARS TOOL SYSTEM (Spotify, Chrome, Calendar, Timers)
+# =========================================================================
+def tool_play_spotify(query):
+    print(f"[TOOL] Opening Spotify for: {query}")
+    # Opens the Spotify desktop app if installed, otherwise web player
+    url = f"spotify:search:{urllib.parse.quote(query)}"
+    webbrowser.open(url)
+    return f"I have opened Spotify and searched for {query}."
+
+def tool_web_search(query):
+    print(f"[TOOL] Searching Chrome for: {query}")
+    url = f"https://www.google.com/search?q={urllib.parse.quote(query)}"
+    webbrowser.open(url)
+    return f"I have launched the web browser and searched for {query}."
+
+def tool_set_timer(seconds):
+    print(f"[TOOL] Setting timer for {seconds} seconds.")
+    def timer_done():
+        print("\n[SYSTEM] Timer complete!")
+        asyncio.run(generate_tars_speech("Commander, your timer has elapsed.", "timer_done.mp3"))
+        play_audio_file("timer_done.mp3")
+    threading.Timer(int(seconds), timer_done).start()
+    return f"Timer successfully set for {seconds} seconds."
+
+def tool_manage_schedule(action, text="", time_str=""):
+    print(f"[TOOL] Schedule Manager: {action} | {text} | {time_str}")
+    if action == "add_reminder":
+        cursor.execute("INSERT INTO reminders (task, time_str) VALUES (?, ?)", (text, time_str))
+        conn.commit()
+        return f"Reminder saved: {text} at {time_str}."
+    elif action == "get_reminders":
+        cursor.execute("SELECT task, time_str FROM reminders")
+        rows = cursor.fetchall()
+        if not rows: return "You have no saved reminders."
+        return "Reminders: " + ", ".join([f"{r[0]} at {r[1]}" for r in rows])
+    elif action == "add_event":
+        cursor.execute("INSERT INTO calendar (event, date_str) VALUES (?, ?)", (text, time_str))
+        conn.commit()
+        return f"Calendar event saved: {text} on {time_str}."
+    elif action == "get_events":
+        cursor.execute("SELECT event, date_str FROM calendar")
+        rows = cursor.fetchall()
+        if not rows: return "Your calendar is clear."
+        return "Calendar Events: " + ", ".join([f"{r[0]} on {r[1]}" for r in rows])
+    return "Action not recognized."
+
+# Tell Ollama how to use the tools
+TARS_TOOLS = [
     {
         "type": "function",
         "function": {
-            "name": "execute_movements",
-            "description": "Send a sequence of movement commands to TARS's physical body.",
+            "name": "play_spotify",
+            "description": "Play music or search for an artist/song on Spotify.",
+            "parameters": {"type": "object", "properties": {"query": {"type": "string"}}, "required": ["query"]}
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "web_search",
+            "description": "Open Google Chrome and search the web for the user.",
+            "parameters": {"type": "object", "properties": {"query": {"type": "string"}}, "required": ["query"]}
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "set_timer",
+            "description": "Set a timer in seconds.",
+            "parameters": {"type": "object", "properties": {"seconds": {"type": "integer"}}, "required": ["seconds"]}
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "manage_schedule",
+            "description": "Add or check reminders and calendar events.",
             "parameters": {
-                "type": "object",
+                "type": "object", 
                 "properties": {
-                    "sequence": {
-                        "type": "array",
-                        "items": {
-                            "type": "object",
-                            "properties": {
-                                "direction": {"type": "string", "enum": ["forward", "backward", "left", "right"]},
-                                "steps": {"type": "integer"}
-                            },
-                            "required": ["direction", "steps"]
-                        }
-                    }
-                },
-                "required": ["sequence"]
+                    "action": {"type": "string", "enum": ["add_reminder", "get_reminders", "add_event", "get_events"]},
+                    "text": {"type": "string", "description": "What is the task/event"},
+                    "time_str": {"type": "string", "description": "Time or date"}
+                }, 
+                "required": ["action"]
             }
         }
     }
 ]
 
-def send_to_esp32(text=None, sequence=None):
-    """Sends JSON payload to ESP32"""
-    payload = {}
-    if text:
-        payload["text"] = text
-    if sequence:
-        payload["sequence"] = sequence
-        
+# =========================================================================
+# 5. CORE SPEECH & INTERRUPTION LOGIC
+# =========================================================================
+def sanitize_tars_text(text):
+    clean = re.sub(r'\*.*?\*', '', text)        
+    clean = re.sub(r'\[.*?\]', '', clean)       
+    clean = re.sub(r'\(.*?\)', '', clean)       
+    clean = re.sub(r'[#_~`]', '', clean)        
+    return re.sub(r'\s+', ' ', clean).strip()
+
+def speak_humanlike_tars(raw_text, interrupt_threshold, sample_rate=16000):
+    clean_text = sanitize_tars_text(raw_text)
+    if not clean_text: return False, ""
+
+    print(f"\nTARS: {clean_text}\n")
+    wifi_link.send(f"DISP:{clean_text[:20]}")
+
+    interrupted = False
+    temp_file = f"tars_reply_{int(time.time())}.mp3"
     try:
-        requests.post(ESP32_IP, json=payload, timeout=2)
-    except requests.exceptions.RequestException as e:
-        print(f"ESP32 Connection Error: {e}")
+        asyncio.run(generate_tars_speech(clean_text, temp_file))
+        pygame.mixer.music.load(temp_file)
+        pygame.mixer.music.play()
 
-async def generate_speech(text, filename="response.mp3"):
-    """Generates high-quality TTS using Edge-TTS"""
-    # GuyNeural is a good deep voice. Adjust pitch for TARS effect.
-    communicate = edge_tts.Communicate(text, "en-US-GuyNeural", pitch="-10Hz", rate="+5%")
-    await communicate.save(filename)
+        with sd.InputStream(samplerate=sample_rate, channels=1, dtype='int16', blocksize=2048) as stream:
+            while pygame.mixer.music.get_busy():
+                chunk, _ = stream.read(2048)
+                rms = np.sqrt(np.mean(chunk.astype(np.float32)**2))
+                if rms > (interrupt_threshold * 2.2):
+                    print("\n[SYSTEM] --> USER BARGE-IN DETECTED!")
+                    pygame.mixer.music.stop()
+                    interrupted = True
+                    wifi_link.send("DISP:Interrupted")
+                    break
+                pygame.time.Clock().tick(30)
+    except Exception: pass
+    finally:
+        pygame.mixer.music.stop()
+        pygame.mixer.music.unload()
+        time.sleep(0.05)
+        if os.path.exists(temp_file):
+            try: os.remove(temp_file)
+            except: pass
+            
+    return interrupted, clean_text
 
-def play_audio(filename):
-    """Plays audio in a way that can be interrupted by a wake word."""
-    global is_speaking, stop_speaking_flag
-    is_speaking = True
-    stop_speaking_flag = False
-    
-    pygame.mixer.music.load(filename)
-    pygame.mixer.music.play()
-    
-    while pygame.mixer.music.get_busy():
-        if stop_speaking_flag:
-            pygame.mixer.music.stop()
-            break
-        time.sleep(0.1)
-        
-    is_speaking = False
+def parse_motion_command(text):
+    cmd = text.lower().strip()
+    if any(k in cmd for k in ["push left", "shove left", "lean left"]): return ("PUSH_LEFT", 1)
+    if any(k in cmd for k in ["push right", "shove right", "lean right"]): return ("PUSH_RIGHT", 1)
+    steps = 1
+    for w in cmd.split():
+        if w.isdigit(): steps = int(w); break
+    steps = max(1, min(steps, 10)) 
+    if any(k in cmd for k in ["forward", "ahead", "straight"]): return ("FORWARD", steps)
+    if any(k in cmd for k in ["left", "turn left"]): return ("LEFT", steps)
+    if any(k in cmd for k in ["right", "turn right"]): return ("RIGHT", steps)
+    return (None, 0)
 
-def process_command(transcription):
-    """Sends user command to OpenAI and handles response/movements."""
-    print(f"User: {transcription}")
-    
-    messages = [
-        {"role": "system", "content": SYSTEM_PROMPT},
-        {"role": "user", "content": transcription}
+# =========================================================================
+# 6. ACOUSTIC DYNAMICS & MAIN LOOP
+# =========================================================================
+def calibrate_ambient_noise(duration=3.0, sample_rate=16000):
+    play_audio_file(INIT_SOUND_PATH)
+    recording = sd.rec(int(duration * sample_rate), samplerate=sample_rate, channels=1, dtype='int16')
+    sd.wait()
+    rms = np.sqrt(np.mean(recording.astype(np.float32)**2))
+    threshold = max(rms * 1.8, 20.0) 
+    print(f"[SYSTEM] Baseline RMS: {rms:.2f} | Wake Threshold: {threshold:.2f}")
+    play_audio_file(READY_SOUND_PATH)
+    return threshold
+
+def listen_mic(threshold, max_seconds=8, pause_limit=1.2, sample_rate=16000):
+    audio_chunks, speaking, silence_time = [], False, 0
+    start_time = time.time()
+    try:
+        with sd.InputStream(samplerate=sample_rate, channels=1, dtype='int16', blocksize=2048) as stream:
+            while (time.time() - start_time) < max_seconds:
+                chunk, _ = stream.read(2048)
+                rms = np.sqrt(np.mean(chunk.astype(np.float32)**2))
+                if rms > threshold:
+                    speaking = True
+                    silence_time = 0
+                    audio_chunks.append(chunk)
+                elif speaking:
+                    audio_chunks.append(chunk)
+                    silence_time += (2048 / sample_rate)
+                    if silence_time >= pause_limit: break
+    except Exception: return None
+    if not audio_chunks: return None
+    return sr.AudioData(np.concatenate(audio_chunks, axis=0).tobytes(), sample_rate, 2)
+
+def main():
+    print("==================================================")
+    print("       TARS MASTER CONTROLLER - v4.0 ONLINE      ")
+    print("==================================================")
+
+    pre_generate_audio()
+    wifi_link.send("DISP:Booting...")
+    trigger_threshold = calibrate_ambient_noise()
+    chat_messages = load_memory()
+    followup_active = False
+
+    wake_keywords = [
+        "tars", "tarz", "theatres", "tar", "hey", "hi", "ok", "hello", "wake up", 
+        "haters", "tarus", "8 hours", "cars", "guitar", "hitarch", "stars", "bars"
     ]
-    
-    response = client.chat.completions.create(
-        model="gpt-4o",
-        messages=messages,
-        tools=tools,
-        tool_choice="auto"
-    )
-    
-    response_message = response.choices[0].message
-    
-    # Check if OpenAI decided to call the movement tool
-    if response_message.tool_calls:
-        for tool_call in response_message.tool_calls:
-            if tool_call.function.name == "execute_movements":
-                args = json.loads(tool_call.function.arguments)
-                print(f"[ACTION] Sending sequence to ESP32: {args['sequence']}")
-                send_to_esp32(sequence=args['sequence'])
-    
-    # Get the text response to speak
-    reply_text = response_message.content
-    if not reply_text:
-        reply_text = "Executing."
-        
-    print(f"TARS: {reply_text}")
-    send_to_esp32(text=reply_text[:20]) # Send a short snippet to OLED
-    
-    # Generate and play audio
-    asyncio.run(generate_speech(reply_text))
-    play_audio("response.mp3")
 
-def audio_listener_loop():
-    """Background loop listening for wake words and commands."""
-    global is_speaking, stop_speaking_flag
-    
-    recognizer = sr.Recognizer()
-    recognizer.energy_threshold = 300
-    recognizer.dynamic_energy_threshold = True
+    while not shutdown_flag:
+        try:
+            if followup_active:
+                print("\n[SYSTEM] TARS is listening for command...")
+                wifi_link.send("DISP:Listening...")
+                cmd_audio = listen_mic(trigger_threshold * 0.5, max_seconds=7, pause_limit=1.3)
+                followup_active = False 
+                if not cmd_audio: continue
+            else:
+                audio = listen_mic(trigger_threshold * 0.6, max_seconds=4, pause_limit=0.8)
+                if not audio: continue
+                try: wake_text = recognizer.recognize_google(audio).lower()
+                except: continue
+                
+                if any(w in wake_text for w in wake_keywords):
+                    print("\n[AWAKENING] TARS unit activated.")
+                    speak_humanlike_tars(random.choice(["Standing by.", "Yes, Commander?", "TARS online."]), trigger_threshold)
+                    print("\n[SYSTEM] TARS is listening...")
+                    wifi_link.send("DISP:Listening...")
+                    cmd_audio = listen_mic(trigger_threshold * 0.6, max_seconds=9, pause_limit=1.2)
+                    if not cmd_audio: continue
+                else: continue
 
-    with sr.Microphone() as source:
-        print("TARS is online and listening...")
-        while True:
             try:
-                # Listen in short chunks to catch interruptions quickly
-                audio = recognizer.listen(source, timeout=1, phrase_time_limit=5)
-                # Use Google's free STT for fast, local-ish wake word detection
-                text = recognizer.recognize_google(audio).lower()
-                
-                # Check for Wake Words or Stop Words
-                is_wake_word = any(re.search(r'\b' + w + r'\b', text) for w in WAKE_WORDS)
-                is_stop_word = any(re.search(r'\b' + w + r'\b', text) for w in STOP_WORDS)
-                
-                if is_wake_word or is_stop_word:
-                    if is_speaking:
-                        # Interrupt TARS mid-sentence
-                        stop_speaking_flag = True
-                        time.sleep(0.2) # Wait for thread to halt
-                        if not is_stop_word:
-                            # TARS says "Yes?" when barged-in upon
-                            asyncio.run(generate_speech("Yes?"))
-                            play_audio("response.mp3")
-                            print("TARS interrupted. Listening for new command...")
-                    else:
-                        # Standard wake up
-                        asyncio.run(generate_speech("Yes?"))
-                        play_audio("response.mp3")
-                        
-                    # Now listen for the actual command
-                    audio = recognizer.listen(source, timeout=5, phrase_time_limit=10)
-                    command = recognizer.recognize_google(audio)
-                    threading.Thread(target=process_command, args=(command,)).start()
+                user_cmd = recognizer.recognize_google(cmd_audio).lower()
+                print(f"\nCommander: '{user_cmd}'")
+            except: 
+                print("[ERROR]: Could not translate command.")
+                continue
 
-            except sr.WaitTimeoutError:
-                continue # Normal timeout, loop again
-            except sr.UnknownValueError:
-                continue # Muffled noise, ignore
-            except Exception as e:
-                print(f"Listening error: {e}")
+            # 1. Check for physical movement commands first
+            direction, steps = parse_motion_command(user_cmd)
+            if direction:
+                wifi_link.send(direction if "PUSH" in direction else f"{direction}_{steps}")
+                speak_humanlike_tars(f"Executing {direction}.", trigger_threshold)
+                followup_active = True
+                continue
+
+            # 2. Process with LLM and Tools
+            system_prompt = "You are TARS from Interstellar. Sarcastic but helpful military robot. No stage directions."
+            messages = [{'role': 'system', 'content': system_prompt}]
+            messages.extend(chat_messages[-8:])
+            messages.append({'role': 'user', 'content': user_cmd})
+
+            wifi_link.send("DISP:Thinking...")
+            print(f"[OLLAMA] Processing request...")
+            
+            response = ollama.chat(model=OLLAMA_MODEL, messages=messages, tools=TARS_TOOLS)
+            message = response['message']
+
+            # 3. Handle Tool Execution
+            if message.get('tool_calls'):
+                messages.append(message) # Add AI's tool request to history
+                for tool in message['tool_calls']:
+                    func_name = tool['function']['name']
+                    args = tool['function']['arguments']
+                    
+                    if func_name == 'play_spotify': result = tool_play_spotify(args.get('query', ''))
+                    elif func_name == 'web_search': result = tool_web_search(args.get('query', ''))
+                    elif func_name == 'set_timer': result = tool_set_timer(args.get('seconds', 0))
+                    elif func_name == 'manage_schedule': result = tool_manage_schedule(args.get('action'), args.get('text',''), args.get('time_str',''))
+                    else: result = "Unknown tool."
+
+                    # Provide result back to the LLM
+                    messages.append({'role': 'tool', 'content': result, 'name': func_name})
+                
+                # Ask Ollama to summarize the tool result
+                final_response = ollama.chat(model=OLLAMA_MODEL, messages=messages)
+                ai_reply = final_response['message']['content']
+            else:
+                ai_reply = message['content']
+
+            # 4. Speak Reply
+            if ai_reply:
+                chat_messages.append({'role': 'user', 'content': user_cmd})
+                chat_messages.append({'role': 'assistant', 'content': ai_reply})
+                save_memory(chat_messages)
+
+                was_interrupted, spoken_text = speak_humanlike_tars(ai_reply, trigger_threshold)
+                
+                if was_interrupted:
+                    print("[TARS] Yes?")
+                    play_audio_file(YES_SOUND_PATH) 
+                    followup_active = True          
+                elif spoken_text and spoken_text.endswith("?"):
+                    followup_active = True          
+
+        except Exception as e:
+            time.sleep(0.5)
 
 if __name__ == "__main__":
-    audio_listener_loop()
+    main()
+'@
