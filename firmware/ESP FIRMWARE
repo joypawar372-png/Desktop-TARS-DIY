@@ -1,0 +1,466 @@
+#include <WiFi.h>
+#include <WebServer.h>
+#include <ESP32Servo.h>
+#include <Preferences.h>
+#include <Wire.h>
+#include <Adafruit_GFX.h>
+#include <Adafruit_SSD1306.h>
+
+// =========================================================================
+// 1. HARDWARE & NETWORK CONFIGURATION
+// =========================================================================
+const char* ssid     = "YOUR_WIFI_SSID";     
+const char* password = "YOUR_WIFI_PASSWORD"; 
+
+#define LEFT_SERVO_PIN  18
+#define RIGHT_SERVO_PIN 19
+#define OLED_SDA        21
+#define OLED_SCL        22
+
+#define SCREEN_WIDTH    128
+#define SCREEN_HEIGHT   64
+Adafruit_SSD1306 display(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, -1);
+
+Servo leftServo;
+Servo rightServo;
+Preferences prefs;
+WebServer server(80);
+WiFiServer socketServer(8888); 
+
+struct TarsConfig {
+  int legSwingAngle;      
+  int bodyPushAngle;      
+  int pitchLiftAngle;     
+  int swingDuration;      
+  int pushDuration;       
+  int transitionPause;    
+  int leftLegTrim;        
+  int rightLegTrim;       
+  bool invertLeftServo;   // NEW: Left Inversion Control
+  bool invertRightServo;  
+} config;
+
+bool emergencyStop = false;
+String currentJoystickDir = "STOP"; 
+
+// =========================================================================
+// 2. TACTICAL DARK WEB DASHBOARD (Stored in PROGMEM Flash)
+// =========================================================================
+const char DASHBOARD_HTML[] PROGMEM = R"rawliteral(
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+<title>TARS Kinematic Control</title>
+<style>
+  body { background-color: #0d0e12; color: #e0e0e0; font-family: 'Segoe UI', Arial, sans-serif; margin: 0; padding: 20px; text-align: center; user-select: none; }
+  h1 { font-size: 20px; letter-spacing: 2px; color: #ffffff; margin-bottom: 2px; }
+  .subtitle { font-size: 11px; color: #4a82cd; letter-spacing: 1.5px; margin-bottom: 20px; font-weight: bold; }
+  .panel { background-color: #16181f; border: 1px solid #232733; border-radius: 8px; padding: 20px; margin-bottom: 15px; box-shadow: 0 4px 12px rgba(0,0,0,0.5); }
+  .panel-title { color: #3b82f6; font-weight: bold; font-size: 13px; letter-spacing: 1px; margin-bottom: 15px; text-transform: uppercase; }
+  
+  .joystick-area { width: 140px; height: 140px; background: #202430; border-radius: 50%; margin: 10px auto; position: relative; border: 2px solid #2a3042; touch-action: none; }
+  .joystick-handle { width: 45px; height: 45px; background: #1d72f3; border-radius: 50%; position: absolute; top: 47.5px; left: 47.5px; box-shadow: 0 0 10px rgba(29,114,243,0.6); transition: transform 0.1s ease-out; }
+  .dragging { transition: none !important; }
+
+  .estop-btn { width: 100%; background: #ff3b30; color: #fff; border: none; padding: 12px; font-weight: bold; border-radius: 6px; font-size: 13px; cursor: pointer; text-transform: uppercase; margin-top: 10px; }
+  .control-group { margin-bottom: 14px; text-align: left; }
+  .control-label { display: flex; justify-content: space-between; font-size: 11px; font-weight: bold; color: #8e9aaf; margin-bottom: 5px; }
+  .value-display { color: #3b82f6; font-weight: bold; }
+  input[type=range] { -webkit-appearance: none; width: 100%; background: #252a37; height: 6px; border-radius: 3px; outline: none; }
+  input[type=range]::-webkit-slider-thumb { -webkit-appearance: none; width: 16px; height: 16px; border-radius: 50%; background: #3b82f6; cursor: pointer; box-shadow: 0 0 6px rgba(59,130,246,0.8); }
+  .thumb-green::-webkit-slider-thumb { background: #10b981 !important; box-shadow: 0 0 6px rgba(16,185,129,0.8) !important; }
+  .checkbox-group { display: flex; align-items: center; justify-content: space-between; font-size: 11px; font-weight: bold; color: #8e9aaf; margin-top: 15px; background: #202430; padding: 10px; border-radius: 5px;}
+  .save-btn { background: #10b981; color: #ffffff; border: none; padding: 12px 24px; font-size: 12px; font-weight: bold; border-radius: 6px; cursor: pointer; letter-spacing: 1px; margin-top: 15px; text-transform: uppercase; width: 100%; box-shadow: 0 0 10px rgba(16,185,129,0.3); }
+</style>
+</head>
+<body>
+  <h1>TARS</h1>
+  <div class="subtitle">KINEMATIC CONTROL SYSTEM</div>
+
+  <div class="panel">
+    <div class="panel-title">JOYSTICK CONTROL</div>
+    <div class="joystick-area" id="joyArea"><div class="joystick-handle" id="joyHandle"></div></div>
+    <button class="estop-btn" onclick="fetch('/estop')">EMERGENCY STOP</button>
+  </div>
+
+  <div class="panel">
+    <div class="panel-title">GAIT & TIMING TUNER</div>
+    <div class="control-group">
+      <div class="control-label"><span>LEG SWING ANGLE</span><span class="value-display" id="v_legSwing">5°</span></div>
+      <input type="range" class="thumb-green" min="0" max="45" value="5" id="legSwing" oninput="updateLive('legSwing', this.value, '°')">
+    </div>
+    <div class="control-group">
+      <div class="control-label"><span>BODY PUSH ANGLE</span><span class="value-display" id="v_bodyPush">19°</span></div>
+      <input type="range" class="thumb-green" min="0" max="45" value="19" id="bodyPush" oninput="updateLive('bodyPush', this.value, '°')">
+    </div>
+    <div class="control-group">
+      <div class="control-label"><span>PITCH LIFT ANGLE</span><span class="value-display" id="v_pitchLift">1°</span></div>
+      <input type="range" min="0" max="30" value="1" id="pitchLift" oninput="updateLive('pitchLift', this.value, '°')">
+    </div>
+    <div class="control-group">
+      <div class="control-label"><span>SWING DURATION</span><span class="value-display" id="v_swingDur">560ms</span></div>
+      <input type="range" min="100" max="2000" value="560" id="swingDur" oninput="updateLive('swingDur', this.value, 'ms')">
+    </div>
+    <div class="control-group">
+      <div class="control-label"><span>PUSH DURATION</span><span class="value-display" id="v_pushDur">620ms</span></div>
+      <input type="range" min="100" max="2000" value="620" id="pushDur" oninput="updateLive('pushDur', this.value, 'ms')">
+    </div>
+    <div class="control-group">
+      <div class="control-label"><span>TRANSITION PAUSE</span><span class="value-display" id="v_transPause">250ms</span></div>
+      <input type="range" min="0" max="1000" value="250" id="transPause" oninput="updateLive('transPause', this.value, 'ms')">
+    </div>
+  </div>
+
+  <div class="panel">
+    <div class="panel-title">SERVO TRIM & INVERSION</div>
+    <div class="control-group">
+      <div class="control-label"><span>LEFT LEG TRIM</span><span class="value-display" id="v_leftTrim">92°</span></div>
+      <input type="range" min="45" max="135" value="92" id="leftTrim" oninput="updateLive('leftTrim', this.value, '°')">
+    </div>
+    <div class="control-group">
+      <div class="control-label"><span>RIGHT LEG TRIM</span><span class="value-display" id="v_rightTrim">92°</span></div>
+      <input type="range" min="45" max="135" value="92" id="rightTrim" oninput="updateLive('rightTrim', this.value, '°')">
+    </div>
+    
+    <div class="checkbox-group">
+      <span>INVERT LEFT SERVO</span>
+      <input type="checkbox" id="invertLeft" onchange="updateLive('invertLeft', this.checked ? 1 : 0, '')">
+    </div>
+    <div class="checkbox-group" style="margin-top: 5px;">
+      <span>INVERT RIGHT SERVO</span>
+      <input type="checkbox" id="invertRight" onchange="updateLive('invertRight', this.checked ? 1 : 0, '')">
+    </div>
+
+    <button class="save-btn" onclick="fetch('/save').then(()=>alert('Saved to TARS memory!'))">SAVE SETTINGS TO ESP32 MEMORY</button>
+  </div>
+
+<script>
+  let timer;
+  function updateLive(key, value, unit) {
+    document.getElementById('v_' + key).innerText = value + unit;
+    clearTimeout(timer);
+    timer = setTimeout(() => fetch(`/update?key=${key}&val=${value}`), 50);
+  }
+
+  // --- JOYSTICK LOGIC ---
+  const joyArea = document.getElementById('joyArea');
+  const joyHandle = document.getElementById('joyHandle');
+  let isDragging = false;
+  let maxRadius = 45;
+  let currentDir = 'STOP';
+
+  function getMousePos(e) {
+    if (e.touches) return { x: e.touches[0].clientX, y: e.touches[0].clientY };
+    return { x: e.clientX, y: e.clientY };
+  }
+
+  function startDrag(e) { 
+    isDragging = true; 
+    joyHandle.classList.add('dragging');
+  }
+  
+  function stopDrag(e) {
+    if (!isDragging) return;
+    isDragging = false;
+    joyHandle.classList.remove('dragging');
+    joyHandle.style.transform = `translate(0px, 0px)`;
+    if(currentDir !== 'STOP') {
+      currentDir = 'STOP';
+      fetch('/joy?dir=STOP');
+    }
+  }
+
+  function doDrag(e) {
+    if (!isDragging) return;
+    e.preventDefault();
+    let pos = getMousePos(e);
+    let rect = joyArea.getBoundingClientRect();
+    let centerX = rect.left + rect.width / 2;
+    let centerY = rect.top + rect.height / 2;
+    
+    let dx = pos.x - centerX;
+    let dy = pos.y - centerY;
+    let dist = Math.sqrt(dx*dx + dy*dy);
+    
+    if (dist > maxRadius) {
+      dx = (dx / dist) * maxRadius;
+      dy = (dy / dist) * maxRadius;
+    }
+    
+    joyHandle.style.transform = `translate(${dx}px, ${dy}px)`;
+
+    let newDir = 'STOP';
+    if (dy < -20) newDir = 'FORWARD';
+    else if (dx < -20) newDir = 'LEFT';
+    else if (dx > 20) newDir = 'RIGHT';
+
+    if (newDir !== currentDir) {
+      currentDir = newDir;
+      fetch('/joy?dir=' + currentDir);
+    }
+  }
+
+  joyArea.addEventListener('mousedown', startDrag);
+  joyArea.addEventListener('touchstart', startDrag, {passive: false});
+  document.addEventListener('mouseup', stopDrag);
+  document.addEventListener('touchend', stopDrag);
+  document.addEventListener('mousemove', doDrag);
+  document.addEventListener('touchmove', doDrag, {passive: false});
+
+  // --- LOAD DEFAULTS ---
+  window.onload = () => {
+    fetch('/get_config').then(r => r.json()).then(cfg => {
+      for (let k in cfg) {
+        let el = document.getElementById(k);
+        if (el) {
+          if (el.type === 'checkbox') el.checked = cfg[k];
+          else { el.value = cfg[k]; document.getElementById('v_' + k).innerText = cfg[k] + (k.includes('Dur')||k.includes('Pause')?'ms':'°'); }
+        }
+      }
+    });
+  };
+</script>
+</body>
+</html>
+)rawliteral";
+
+// =========================================================================
+// 3. PERSISTENT MEMORY & SERVO KINEMATICS
+// =========================================================================
+void loadNVSConfig() {
+  prefs.begin("tars_cfg", true);
+  config.legSwingAngle    = prefs.getInt("legSwing", 5);
+  config.bodyPushAngle    = prefs.getInt("bodyPush", 19);
+  config.pitchLiftAngle   = prefs.getInt("pitchLift", 1);
+  config.swingDuration    = prefs.getInt("swingDur", 560);
+  config.pushDuration     = prefs.getInt("pushDur", 620);
+  config.transitionPause  = prefs.getInt("transPause", 250);
+  config.leftLegTrim      = prefs.getInt("leftTrim", 92);
+  config.rightLegTrim     = prefs.getInt("rightTrim", 92);
+  config.invertLeftServo  = prefs.getBool("invertLeft", false);
+  config.invertRightServo = prefs.getBool("invertRight", false);
+  prefs.end();
+}
+
+void saveNVSConfig() {
+  prefs.begin("tars_cfg", false);
+  prefs.putInt("legSwing", config.legSwingAngle);
+  prefs.putInt("bodyPush", config.bodyPushAngle);
+  prefs.putInt("pitchLift", config.pitchLiftAngle);
+  prefs.putInt("swingDur", config.swingDuration);
+  prefs.putInt("pushDur", config.pushDuration);
+  prefs.putInt("transPause", config.transitionPause);
+  prefs.putInt("leftTrim", config.leftLegTrim);
+  prefs.putInt("rightTrim", config.rightLegTrim);
+  prefs.putBool("invertLeft", config.invertLeftServo);
+  prefs.putBool("invertRight", config.invertRightServo);
+  prefs.end();
+}
+
+// Unified motor control ensuring inversions are respected globally
+void moveServos(int leftTarget, int rightTarget) {
+  if (config.invertLeftServo) {
+    leftTarget = 180 - leftTarget;
+  }
+  if (config.invertRightServo) {
+    rightTarget = 180 - rightTarget;
+  }
+  leftServo.write(leftTarget);
+  rightServo.write(rightTarget);
+}
+
+void applyTrim() {
+  moveServos(config.leftLegTrim, config.rightLegTrim);
+}
+
+// Coordinated Alternate Gait Logic
+void executeGaitStep(String dir) {
+  if (emergencyStop) return;
+  int lTrim = config.leftLegTrim;
+  int rTrim = config.rightLegTrim;
+  int swing = config.legSwingAngle;
+  int push = config.bodyPushAngle;
+
+  if (dir == "FORWARD") {
+    // Phase 1: Push Right (Tilt), Swing Left Forward
+    moveServos(lTrim + swing, rTrim + push);
+    delay(config.swingDuration);
+
+    // Phase 2: Pull to Center
+    moveServos(lTrim, rTrim);
+    delay(config.transitionPause);
+
+    // Phase 3: Push Left (Tilt), Swing Right Forward
+    moveServos(lTrim + push, rTrim + swing);
+    delay(config.swingDuration);
+
+    // Phase 4: Pull to Center
+    moveServos(lTrim, rTrim);
+    delay(config.transitionPause);
+  } 
+  else if (dir == "LEFT") {
+    // Steer left: Swing right leg wide, drag left leg
+    moveServos(lTrim, rTrim + swing);
+    delay(config.swingDuration);
+    moveServos(lTrim, rTrim);
+    delay(config.transitionPause);
+  }
+  else if (dir == "RIGHT") {
+    // Steer right: Swing left leg wide, drag right leg
+    moveServos(lTrim + swing, rTrim);
+    delay(config.swingDuration);
+    moveServos(lTrim, rTrim);
+    delay(config.transitionPause);
+  }
+}
+
+void executeDeskNudge(String type) {
+  if (emergencyStop) return;
+  int lTrim = config.leftLegTrim;
+  int rTrim = config.rightLegTrim;
+
+  if (type == "PUSH_LEFT") {
+    moveServos(lTrim + 8, rTrim);
+    delay(120);
+    applyTrim();
+  } else if (type == "PUSH_RIGHT") {
+    moveServos(lTrim, rTrim + 8);
+    delay(120);
+    applyTrim();
+  }
+}
+
+// =========================================================================
+// 4. ALIGNED 0.96" OLED PARSER
+// =========================================================================
+void renderOledDisplay(String payload) {
+  display.clearDisplay();
+  display.setTextSize(1);
+  display.setTextColor(SSD1306_WHITE);
+
+  int lineIdx = 0;
+  int startPos = 0;
+  int endPos = payload.indexOf('|');
+
+  while (lineIdx < 4) {
+    String lineText = "";
+    if (endPos != -1) {
+      lineText = payload.substring(startPos, endPos);
+      startPos = endPos + 1;
+      endPos = payload.indexOf('|', startPos);
+    } else {
+      lineText = payload.substring(startPos);
+    }
+
+    display.setCursor(0, lineIdx * 15);
+    display.print(lineText);
+    lineIdx++;
+
+    if (endPos == -1 && startPos >= payload.length()) break;
+  }
+  display.display();
+}
+
+// =========================================================================
+// 5. SETUP & MAIN EXECUTION LOOP
+// =========================================================================
+void setup() {
+  Serial.begin(115200);
+
+  leftServo.attach(LEFT_SERVO_PIN);
+  rightServo.attach(RIGHT_SERVO_PIN);
+
+  loadNVSConfig();
+  applyTrim();
+
+  Wire.begin(OLED_SDA, OLED_SCL);
+  if (display.begin(SSD1306_SWITCHCAPVCC, 0x3C)) {
+    renderOledDisplay("TARS KINEMATICS|NVS Cfg Loaded|IP: Connecting...|Standby");
+  }
+
+  WiFi.begin(ssid, password);
+  while (WiFi.status() != WL_CONNECTED) {
+    delay(500);
+    Serial.print(".");
+  }
+
+  Serial.println("\n[SYSTEM] TARS IP: " + WiFi.localIP().toString());
+  renderOledDisplay("TARS ONLINE|IP: " + WiFi.localIP().toString() + "|Ready, Chief.|Standby");
+
+  // Web routes
+  server.on("/", HTTP_GET, []() { server.send(200, "text/html", DASHBOARD_HTML); });
+  
+  server.on("/joy", HTTP_GET, []() { 
+    currentJoystickDir = server.arg("dir"); 
+    server.send(200, "text/plain", "OK"); 
+  });
+
+  server.on("/get_config", HTTP_GET, []() {
+    String json = "{";
+    json += "\"legSwing\":" + String(config.legSwingAngle) + ",";
+    json += "\"bodyPush\":" + String(config.bodyPushAngle) + ",";
+    json += "\"pitchLift\":" + String(config.pitchLiftAngle) + ",";
+    json += "\"swingDur\":" + String(config.swingDuration) + ",";
+    json += "\"pushDur\":" + String(config.pushDuration) + ",";
+    json += "\"transPause\":" + String(config.transitionPause) + ",";
+    json += "\"leftTrim\":" + String(config.leftLegTrim) + ",";
+    json += "\"rightTrim\":" + String(config.rightLegTrim) + ",";
+    json += "\"invertLeft\":" + String(config.invertLeftServo ? "true" : "false") + ",";
+    json += "\"invertRight\":" + String(config.invertRightServo ? "true" : "false");
+    json += "}";
+    server.send(200, "application/json", json);
+  });
+
+  server.on("/update", HTTP_GET, []() {
+    String key = server.arg("key");
+    int val = server.arg("val").toInt();
+    if (key == "legSwing") config.legSwingAngle = val;
+    else if (key == "bodyPush") config.bodyPushAngle = val;
+    else if (key == "pitchLift") config.pitchLiftAngle = val;
+    else if (key == "swingDur") config.swingDuration = val;
+    else if (key == "pushDur") config.pushDuration = val;
+    else if (key == "transPause") config.transitionPause = val;
+    else if (key == "leftTrim") { config.leftLegTrim = val; applyTrim(); }
+    else if (key == "rightTrim") { config.rightLegTrim = val; applyTrim(); }
+    else if (key == "invertLeft") { config.invertLeftServo = (val == 1); applyTrim(); }
+    else if (key == "invertRight") { config.invertRightServo = (val == 1); applyTrim(); }
+    server.send(200, "text/plain", "OK");
+  });
+
+  server.on("/save", HTTP_GET, []() { saveNVSConfig(); server.send(200, "text/plain", "Saved"); });
+  server.on("/estop", HTTP_GET, []() { emergencyStop = true; applyTrim(); currentJoystickDir = "STOP"; server.send(200, "text/plain", "Stopped"); });
+
+  server.begin();
+  socketServer.begin();
+}
+
+void loop() {
+  server.handleClient();
+
+  if (currentJoystickDir != "STOP" && !emergencyStop) {
+    executeGaitStep(currentJoystickDir);
+  }
+
+  WiFiClient client = socketServer.available();
+  if (client) {
+    while (client.connected()) {
+      if (client.available()) {
+        String cmd = client.readStringUntil('\n');
+        cmd.trim();
+
+        if (cmd.startsWith("DISP:")) {
+          renderOledDisplay(cmd.substring(5));
+        } else if (cmd.startsWith("FORWARD")) {
+          executeGaitStep("FORWARD");
+        } else if (cmd == "PUSH_LEFT" || cmd == "PUSH_RIGHT") {
+          executeDeskNudge(cmd);
+        } else if (cmd.startsWith("SET_SWING:")) {
+          config.legSwingAngle = cmd.substring(10).toInt();
+        }
+      }
+    }
+    client.stop();
+  }
+}
