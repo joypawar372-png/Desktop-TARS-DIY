@@ -9,8 +9,8 @@
 // =========================================================================
 // 1. HARDWARE & NETWORK CONFIGURATION
 // =========================================================================
-const char* ssid     = "YOUR_WIFI_SSID";     
-const char* password = "YOUR_WIFI_PASSWORD"; 
+const char* ssid     = "Aashi pawar";     
+const char* password = "8221946003"; 
 
 #define LEFT_SERVO_PIN  18
 #define RIGHT_SERVO_PIN 19
