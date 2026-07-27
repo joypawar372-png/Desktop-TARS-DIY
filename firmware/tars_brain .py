@@ -125,7 +125,6 @@ def save_memory(chat_history):
 # SECTION 2: mDNS AUTO-DISCOVERY & HARDWARE LINK
 # =========================================================================
 def discover_tars_ip():
-    """Tries mDNS resolution (tars.local), then scans LAN subnet if mDNS fails."""
     print("[NETWORK] Resolving TARS via mDNS (tars.local)...")
     try:
         ip = socket.gethostbyname("tars.local")
@@ -134,7 +133,6 @@ def discover_tars_ip():
     except Exception:
         print("[WARNING] mDNS lookup failed. Initiating LAN Subnet Scanner...")
 
-    # Subnet Scanner Fallback
     try:
         s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         s.connect(("8.8.8.8", 80))
@@ -155,7 +153,7 @@ def discover_tars_ip():
             except Exception: pass
     except Exception: pass
 
-    return "192.168.1.126" # Hardcoded safety fallback
+    return "192.168.1.126" 
 
 class ESP32SocketLink:
     def __init__(self, port):
