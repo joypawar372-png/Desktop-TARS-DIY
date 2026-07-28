@@ -27,278 +27,56 @@ Wiring (1x Set): Flexible silicone-insulated jumper wires (26-30 AWG recommended
 ---
 <img width="416" height="555" alt="images" src="https://github.com/user-attachments/assets/f3e853f6-c21b-484c-a28f-8f6542b22210" />
 
-## 🗂️ Distributed Payload Design (Space Optimization)
-
-Rather than stuffing all electronics into the center body—which would cause severe component collisions—components and weight are strategically distributed across all three moving slabs:
-
-```text
-
 
 +────────────────────────+────────────────────────+────────────────────────+
-|   SLAB 1: LEFT LEG     |  SLAB 2: CENTER BODY   |   SLAB 3: RIGHT LEG    |
-|       (26 mm Wide)     |      (44 mm Wide)      |      (26 mm Wide)      |
-+────────────────────────+────────────────────────+────────────────────────+
-|                        |  [0.96" OLED Screen]   |                        |
-|                        |                        |  [MT3608 Boost Mod.]   |
-|  [SG90 Servo 1]        |  [ESP32 Node32S]       |                        |
-|        +               |        +               |  [SG90 Servo 2]        |
-|  [18650 Battery Cell]  |  [MAX98357A Amp]       |        +               |
-|  (Mounted Vertically)  |        +               |  [TP4056 Charger]      |
-|                        |  [Mic & Mini Speaker]  |                        |
-+────────────────────────+────────────────────────+────────────────────────+
 
 
-SCAD CODE
+# TARS AI Desktop Companion 🤖
 
-// =========================================================================
-// CODE 1: TARS REPLICA - CHASSIS & CYLINDRICAL SKID LEGS WITH DETENT POCKETS
-// Features: Completely sharp center body, legs with front/back bottom roll edges,
-//           wide-open internal cavity, and space-saving female detent lock tracks.
-// =========================================================================
+[![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
+[![Arduino IDE](https://img.shields.io/badge/Arduino_IDE-C++-00979D?logo=arduino)](https://www.arduino.cc/)
+[![Ollama](https://img.shields.io/badge/AI-Ollama_Llama_3.2-black)](https://ollama.ai/)
+[![YouTube](https://img.shields.io/badge/YouTube-BRAVO__X1-red?logo=youtube)](https://www.youtube.com/)
 
-$fn = 64;
+An autonomous, voice-activated 3-legged desktop companion robot inspired by *Interstellar*. TARS features a local Python-based AI brain powered by Ollama, synced to an ESP32 hardware body via a high-speed TCP socket. 
 
-// --- Core Mechanical Geometry (mm) ---
-body_w      = 60;   
-body_d      = 40;   
-body_h      = 120;  
-wall        = 2.5;  // Rugged uniform side walls
-cover_thick = 2;    
-leg_r       = 6;    // Front/Back bottom edge roll radius
+## ✨ Core Features
 
-leg_w       = 20;   
-print_gap   = 25;   
+* **🧠 Local LLM Brain:** Powered by Ollama (`llama3.2`) for fast, local, conversational AI.
+* **🗣️ Voice & Acoustic Barge-in:** Real-time speech recognition with a dynamic pause engine and instant barge-in interruption.
+* **👀 Animated OLED Interface:** 0.96" display featuring 30 FPS animated, wandering minus-sign eyes that yield to synchronized word-by-word text streaming when speaking.
+* **🦿 3-Legged Kinematic Engine:** Custom 5-phase synchronous crutch-gait kinematics specifically engineered for mirrored servos. Supports multi-step pathing sequences (e.g., "Two steps forward, one right").
+* **🌐 Web & OS Integration:** Can launch local Windows applications, read local PC files, fetch live DuckDuckGo web data (weather, news), and execute targeted site searches.
+* **📱 Tactical Web Dashboard:** A responsive HTML dashboard hosted on the ESP32 for live PID tuning, servo trimming, inversion, and joystick control.
 
-// Internal Workspace Extents
-int_w = body_w - (2 * wall);
-int_h = body_h - (2 * wall);
-int_d = body_d - wall - cover_thick;
+## 🛠️ Hardware Loadout
 
-// --- Slicing Build Deck Grid Array ---
-translate([0, 0, 0]) 
-    main_chassis_cabinet();
+* **Microcontroller:** ESP32 (Wi-Fi enabled)
+* **Actuators:** 2x Servos (SG90 or MG90S)
+* **Display:** 0.96" I2C OLED (SSD1306)
+* **Chassis:** Custom 3D-printed 3-legged upright body
+* **Power:** 5V Buck Converter / LiPo Battery System
 
-translate([-(body_w/2 + leg_w/2 + print_gap), 0, 0])
-    tars_skid_leg(side="left");
+### Wiring Schematic
+| Component | ESP32 Pin |
+| :--- | :--- |
+| Left Servo (PWM) | GPIO 18 |
+| Right Servo (PWM) | GPIO 19 |
+| OLED SDA | GPIO 21 |
+| OLED SCL | GPIO 22 |
 
-translate([(body_w/2 + leg_w/2 + print_gap), 0, 0])
-    tars_skid_leg(side="right");
+## 💻 Software Dependencies
 
-// =========================================================================
-// HELPER: LEGS WITH SHARP SIDES AND CYLINDRICAL FRONT/BACK BOTTOM EDGES
-// =========================================================================
-module leg_skid_monolith(w, d, h, r) {
-    hull() {
-        // Sharp Top Plate Boundary
-        translate([-w/2, -d/2, h - 0.1]) 
-            cube([w, d, 0.1]);
-        
-        // Bottom Front Cylindrical Skid Edge
-        translate([-w/2, -d/2 + r, r]) 
-            rotate([0, 90, 0]) cylinder(r=r, h=w);
-            
-        // Bottom Back Cylindrical Skid Edge
-        translate([-w/2, d/2 - r, r]) 
-            rotate([0, 90, 0]) cylinder(r=r, h=w);
-    }
-}
+### 1. ESP32 Body (C++)
+Install the following libraries via the Arduino Library Manager:
+* `ESP32Servo`
+* `Adafruit GFX Library`
+* `Adafruit SSD1306`
 
-// =========================================================================
-// COMPONENT 1: ELECTRONICS CHASSIS CABINET (WITH DETENT RECESSES)
-// =========================================================================
-module main_chassis_cabinet() {
-    difference() {
-        // Sharp rectangular outer hull
-        translate([-body_w/2, -body_d/2, 0]) 
-            cube([body_w, body_d, body_h]);
-        
-        // 1. Clean Open Internal Cavity
-        translate([-int_w/2, -body_d/2 + wall, wall]) 
-            cube([int_w, int_d + 0.1, int_h]);
-        
-        // 2. Inset Lip Frame Border Step for Flush Seating
-        translate([-(body_w - 2.5)/2, body_d/2 - cover_thick, 1.5]) 
-            cube([body_w - 2.5, cover_thick + 0.1, body_h - 3]);
-        
-        // 3. Center Concentric Pass-Through Axle Holes
-        translate([0, 0, body_h/2]) 
-            rotate([0, 90, 0]) cylinder(r=3.5, h=body_w + 2, center=true);
-        
-        // 4. SPACE-SAVING DETENT LOCKING RECESSES (Horizontal retention grooves)
-        for (z_pos = [25, 95]) {
-            // Left Side Wall Grooves
-            translate([-int_w/2 - 0.5, body_d/2 - cover_thick - 2.5, z_pos]) 
-                cube([0.6, 5.2, 1.2], center=true);
-            // Right Side Wall Grooves
-            translate([int_w/2 + 0.5, body_d/2 - cover_thick - 2.5, z_pos]) 
-                cube([0.6, 5.2, 1.2], center=true);
-        }
-        
-        // 5. 0.96" OLED Screen Bezel
-        translate([-22.4/2, -body_d/2 - 0.1, 98]) cube([22.4, wall + 0.2, 11.5]);
-        
-        // 6. TP4056 USB-C Interface Entry Port
-        translate([-body_w/2 - 0.1, -body_d/2 + wall + 4, wall + 5]) cube([wall + 0.2, 5.0, 11.0]);
-    }
-}
-
-// =========================================================================
-// COMPONENT 2: OUTER LEGS (SHARP SIDES, CYLINDRICAL BOTTOM EDGES)
-// =========================================================================
-module tars_skid_leg(side="left") {
-    leg_int_w = leg_w - (2 * wall);
-    difference() {
-        // Main Solid Leg Structure
-        leg_skid_monolith(leg_w, body_d, body_h, leg_r);
-        
-        // 1. Deep Cavity Extraction
-        translate([0, 0, 0])
-            difference() {
-                translate([-leg_int_w/2, -body_d/2 + wall, wall]) 
-                    cube([leg_int_w, int_d + 0.1, int_h]);
-                translate([-leg_w/2, -body_d/2 + leg_r, leg_r])
-                    rotate([0,90,0]) cylinder(r=leg_r - wall, h=leg_w);
-                translate([-leg_w/2, body_d/2 - leg_r, leg_r])
-                    rotate([0,90,0]) cylinder(r=leg_r - wall, h=leg_w);
-            }
-        
-        // 2. Rear Recessed Step Lip for Back Cover Seating
-        translate([-(leg_w - 2.5)/2, body_d/2 - cover_thick, 1.5]) 
-            cube([leg_w - 2.5, cover_thick + 0.1, body_h - 3]);
-        
-        // 3. SPACE-SAVING LEG DETENT RECESSES
-        for (z_pos = [25, 95]) {
-            translate([-leg_int_w/2 - 0.5, body_d/2 - cover_thick - 2.5, z_pos]) 
-                cube([0.6, 5.2, 1.2], center=true);
-            translate([leg_int_w/2 + 0.5, body_d/2 - cover_thick - 2.5, z_pos]) 
-                cube([0.6, 5.2, 1.2], center=true);
-        }
-        
-        // 4. Blind Pivot Axle Hole (Sealed completely on the exterior face)
-        if (side == "left") {
-            translate([0, 0, body_h/2]) rotate([0, 90, 0]) cylinder(r=3.5, h=leg_w/2 + 2);
-        } else {
-            translate([-(leg_w/2 + 2), 0, body_h/2]) rotate([0, 90, 0]) cylinder(r=3.5, h=leg_w/2 + 2);
-        }
-        
-        // 5. Visual Segment Detail Paneling Lines
-        translate([side == "left" ? leg_w/2 - 0.5 : -leg_w/2 - 0.1, -body_d/2 - 0.1, body_h/2]) cube([0.6, body_d + 0.2, 0.6]);
-        translate([side == "left" ? leg_w/2 - 0.5 : -leg_w/2 - 0.1, -body_d/2 - 0.1, body_h/2 + 30]) cube([0.6, body_d + 0.2, 0.6]);
-        translate([side == "left" ? leg_w/2 - 0.5 : -leg_w/2 - 0.1, -body_d/2 - 0.1, body_h/2 - 30]) cube([0.6, body_d + 0.2, 0.6]);
-    }
-}
-
-
-
-
-
-
-// =========================================================================
-// CODE 2: TARS REPLICA - RUGGED DETENT SNAP-FIT REAR COVERS
-// Contains: 1x Vented Center Cover, 2x Bottom-Curved Leg Backplates.
-// Features: Low-profile, highly rigid detent blocks that won't snap off.
-// =========================================================================
-
-$fn = 64;
-
-// --- Dimensions Synchronized with Code 1 ---
-body_w      = 60;   
-body_h      = 120;  
-body_d      = 40;
-leg_w       = 20;
-cover_thick = 2;    
-leg_r       = 6;    
-
-// --- Slicing Plate Matrix Layout ---
-translate([0, 0, 0])
-    main_chassis_vented_cover();
-
-translate([-45, 0, 0])
-    leg_locking_cover();
-    
-translate([45, 0, 0])
-    leg_locking_cover();
-
-// =========================================================================
-// HELPER: RUGGED STUBBY DETENT LOCKING LUG (Extremely durable)
-// =========================================================================
-module stubby_detent_lug(direction="left") {
-    // A thick, compact block that uses the chassis' wall flexing to lock securely
-    union() {
-        // High-strength mounting base pillar
-        cube([1.4, 5.0, 3.5]);
-        
-        // Solid locking bead (half-cylinder profile)
-        translate([direction == "left" ? -0.4 : 1.4, 2.5, 1.75]) 
-            rotate([90, 0, 0]) 
-            cylinder(r=0.45, h=5.0, center=true);
-    }
-}
-
-// =========================================================================
-// COMPONENT 1: VENTILATED CENTER COVER PLATE (COMPLETELY SHARP EDGES)
-// =========================================================================
-module main_chassis_vented_cover() {
-    clearance = 0.35; // Fine-tuned assembly clearance
-    w = body_w - 2.5 - clearance;
-    h = body_h - 3.0 - clearance;
-    
-    union() {
-        difference() {
-            // Main Flat Panel Base
-            translate([-w/2, -h/2, 0]) 
-                cube([w, h, cover_thick]);
-            
-            // Thermal Dissipation Grids
-            for (v_row = [-40 : 8 : -10]) {
-                for (v_col = [-16 : 8 : 16]) {
-                    translate([v_col, v_row, cover_thick/2]) 
-                        cube([3, 5, cover_thick + 0.5], center=true);
-                }
-            }
-            for (v_col = [-12 : 8 : 12]) {
-                translate([v_col, 30, cover_thick/2]) 
-                    cube([3, 20, cover_thick + 0.5], center=true);
-            }
-        }
-        
-        // 4x Ultra-Rugged Detent Lugs (Positioned right at the structural boundaries)
-        translate([-w/2, -h/2 + 25 - 2.5, cover_thick])  stubby_detent_lug("left");
-        translate([-w/2, -h/2 + 95 - 2.5, cover_thick])  stubby_detent_lug("left");
-        translate([w/2 - 1.4, -h/2 + 25 - 2.5, cover_thick]) stubby_detent_lug("right");
-        translate([w/2 - 1.4, -h/2 + 95 - 2.5, cover_thick]) stubby_detent_lug("right");
-    }
-}
-
-// =========================================================================
-// COMPONENT 2: LEG COMPARTMENT CLOSURE SHIELD (BOTTOM-CURVED)
-// =========================================================================
-module leg_locking_cover() {
-    clearance = 0.35;
-    w = leg_w - 2.5 - clearance;
-    h = body_h - 3.0 - clearance;
-    
-    union() {
-        difference() {
-            // Main Flat Panel Base
-            translate([-w/2, -h/2, 0]) 
-                cube([w, h, cover_thick]);
-            
-            // Cylindrical cut out at the bottom to match the leg profile sweep
-            translate([-w/2 - 0.1, -h/2 - 0.1, leg_r - 1.5])
-                rotate([0, 90, 0])
-                difference() {
-                    translate([-leg_r, -leg_r, 0]) cube([leg_r*2, leg_r*2, w + 0.2]);
-                    cylinder(r=leg_r, h=w + 0.2);
-                }
-        }
-        
-        // 4x Ultra-Rugged Detent Lugs
-        translate([-w/2, -h/2 + 25 - 2.5, cover_thick])  stubby_detent_lug("left");
-        translate([-w/2, -h/2 + 95 - 2.5, cover_thick])  stubby_detent_lug("left");
-        translate([w/2 - 1.4, -h/2 + 25 - 2.5, cover_thick]) stubby_detent_lug("right");
-        translate([w/2 - 1.4, -h/2 + 95 - 2.5, cover_thick]) stubby_detent_lug("right");
-    }
+### 2. Python AI Brain
+Ensure Python 3.10+ is installed, then install the required modules:
+```bash
+pip install ollama pygame edge-tts numpy sounddevice SpeechRecognition ddgs psutil
 }
 
 Only the Paranoid Survive
