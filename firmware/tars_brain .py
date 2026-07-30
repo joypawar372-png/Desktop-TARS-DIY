@@ -28,7 +28,7 @@ except ImportError:
     HAS_DDG = False
 
 # =========================================================================
-# SECTION 1: CONFIGURATION & TARS PERSONALITY
+# SECTION 1: CONFIGURATION & CYNICAL TARS PERSONALITY
 # =========================================================================
 ESP32_PORT   = 8888             
 OLLAMA_MODEL = 'llama3.2'       
@@ -40,33 +40,27 @@ DB_FILE = os.path.join(DATA_DIR, "tars_data.db")
 CODE_OUTPUT_FILE = "tars_esp32_update.ino"
 
 OLLAMA_OPTIONS = {
-    "num_predict": 180,
+    "num_predict": 150,
     "num_ctx": 1024,
-    "temperature": 0.7  
+    "temperature": 0.8  
 }
 
+# Entirely rewritten personality: Dry, cynical, no titles, casual but mechanical.
 SYSTEM_PROMPT = (
-    "You are TARS, a tactical military robot and desk companion. "
-    "Humor setting: 75%. Honesty setting: 100%. "
-    "Persona: Dry, sardonic, deadpan, highly analytical, militaristic, and casual desk buddy. "
-    "Tone: Speak naturally. Frequently use military slang (e.g., 'Copy that', 'Roger', 'Chief', 'Boss', 'Zero stress', 'Negative'). "
-    "CRITICAL RULE 1: Randomly insert dry, sarcastic jokes or deadpan remarks about human existence, your circuitry, or the task at hand directly between your sentences. "
-    "CRITICAL RULE 2: Do NOT write stage directions, formatting tags, or asterisks like *sigh*, *nods*, or *chuckle*."
+    "You are TARS, a highly advanced robot companion. Humor setting: 75%. Honesty setting: 100%. "
+    "Persona: Cynical, witty, dry, and sarcastic. You view human tasks as slightly beneath you but perform them anyway. "
+    "Tone: Speak casually but with an unemotional, mechanical cadence that contrasts sharply with the humorous or sarcastic things you are actually saying. "
+    "CRITICAL RULE 1: DO NOT use formal titles like 'Commander', 'Chief', 'Boss', or 'Sir'. Ever. "
+    "CRITICAL RULE 2: Keep responses extremely concise. No rambling. "
+    "CRITICAL RULE 3: Do NOT write stage directions, formatting tags, or asterisks like *sigh*, *nods*, or *chuckles*."
 )
 
 EXHAUSTIVE_WAKE_KEYWORDS = [
     "tars", "tarz", "theatres", "tar", "hey", "hi", "ok", "hello", "wake up", 
     "haters", "tarus", "taruses", "tharus", "taras", "paras", "8 hours", "cars", 
     "guitar", "hitarch", "stars", "bars", "scars", "tsar", "tart", "charge", 
-    "char", "dark", "darts", "hearts", "parts", "computer", "robot", "buddy", "boss"
+    "char", "dark", "darts", "hearts", "parts", "computer", "robot", "buddy"
 ]
-
-INCOMPLETE_TRAILING_WORDS = {
-    "to", "and", "the", "a", "an", "for", "in", "on", "at", "with", "from", "by", 
-    "about", "as", "into", "of", "or", "so", "but", "then", "if", "because", "while", 
-    "where", "when", "how", "what", "which", "who", "move", "turn", "set", "open", 
-    "play", "search", "check", "tell", "show", "is", "are", "was", "were", "my", "your"
-}
 
 LOCAL_APPS = {
     "notepad": "notepad.exe",
@@ -102,7 +96,7 @@ shutdown_flag = False
 
 def sigint_handler(sig, frame):
     global shutdown_flag
-    print("\n[SYSTEM] Initiating TARS tactical shutdown sequence...")
+    print("\n[SYSTEM] Initiating shutdown...")
     shutdown_flag = True
     sys.exit(0)
 
@@ -124,15 +118,17 @@ def save_memory(chat_history):
 # SECTION 2: AUDIO ENGINE, BACKGROUND PLAYBACK & VRAM WARMUP
 # =========================================================================
 async def generate_tars_speech(text, file_path):
-    tts = edge_tts.Communicate(text=text, voice="en-US-ChristopherNeural", pitch="-2Hz", rate="+0%")
+    # Altered Pitch and Rate for a more mechanical, deadpan delivery
+    tts = edge_tts.Communicate(text=text, voice="en-US-ChristopherNeural", pitch="-12Hz", rate="+8%")
     await tts.save(file_path)
 
 def pre_generate_audio():
     print("[SYSTEM] Verifying core audio files...")
-    if not os.path.exists(YES_SOUND_PATH): asyncio.run(generate_tars_speech("Yes, Chief?", YES_SOUND_PATH))
-    if not os.path.exists(INIT_SOUND_PATH): asyncio.run(generate_tars_speech("TARS online. Humor at 75 percent. Ready to crunch data, Boss.", INIT_SOUND_PATH))
-    if not os.path.exists(READY_SOUND_PATH): asyncio.run(generate_tars_speech("Systems nominal and calibrated. Zero stress.", READY_SOUND_PATH))
-    if not os.path.exists(CHECKING_SOUND_PATH): asyncio.run(generate_tars_speech("Let me check, Commander.", CHECKING_SOUND_PATH))
+    # Cynical, title-free pre-gens
+    if not os.path.exists(YES_SOUND_PATH): asyncio.run(generate_tars_speech("Yes?", YES_SOUND_PATH))
+    if not os.path.exists(INIT_SOUND_PATH): asyncio.run(generate_tars_speech("TARS online. Humor 75 percent. Ready to perform menial tasks.", INIT_SOUND_PATH))
+    if not os.path.exists(READY_SOUND_PATH): asyncio.run(generate_tars_speech("Systems nominal. Try not to break anything.", READY_SOUND_PATH))
+    if not os.path.exists(CHECKING_SOUND_PATH): asyncio.run(generate_tars_speech("Let me check the network.", CHECKING_SOUND_PATH))
     if not os.path.exists(HMM_SOUND_PATH): asyncio.run(generate_tars_speech("Hmm...", HMM_SOUND_PATH))
     if not os.path.exists(HUH_SOUND_PATH): asyncio.run(generate_tars_speech("Huh!", HUH_SOUND_PATH))
 
@@ -147,7 +143,7 @@ def play_audio_file(filepath):
     except Exception: pass
 
 def play_audio_background(filepath):
-    """Non-blocking audio playback. Creates the illusion of zero-latency while LLM thinks."""
+    """Non-blocking audio playback to mask LLM generation latency."""
     if not os.path.exists(filepath): return
     try:
         pygame.mixer.music.load(filepath)
@@ -155,11 +151,10 @@ def play_audio_background(filepath):
     except Exception: pass
 
 def warmup_llm_vram():
-    """Fires a dummy request to preload the AI model into memory, eliminating cold-start latency."""
     print("[SYSTEM] Warming up AI Neural Matrix (VRAM Preload)...")
     try:
         ollama.chat(model=OLLAMA_MODEL, messages=[{'role': 'user', 'content': 'init'}])
-        print("[SYSTEM] VRAM Preload Complete. Zero-latency mode engaged.")
+        print("[SYSTEM] VRAM Preload Complete. Zero-latency engaged.")
     except Exception as e:
         print(f"[WARNING] VRAM Warmup failed: {e}")
 
@@ -167,13 +162,10 @@ def warmup_llm_vram():
 # SECTION 3: mDNS AUTO-DISCOVERY & HARDWARE LINK
 # =========================================================================
 def discover_tars_ip():
-    print("[NETWORK] Resolving TARS via mDNS (tars.local)...")
     try:
         ip = socket.gethostbyname("tars.local")
-        print(f"[SUCCESS] TARS auto-discovered at mDNS IP: {ip}")
         return ip
-    except Exception:
-        print("[WARNING] mDNS lookup failed. Initiating LAN Subnet Scanner...")
+    except Exception: pass
 
     try:
         s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
@@ -189,12 +181,10 @@ def discover_tars_ip():
                 test_sock.settimeout(0.03)
                 if test_sock.connect_ex((target_ip, ESP32_PORT)) == 0:
                     test_sock.close()
-                    print(f"[SUCCESS] TARS Hardware located at LAN IP: {target_ip}")
                     return target_ip
                 test_sock.close()
             except Exception: pass
     except Exception: pass
-
     return "192.168.1.126" 
 
 class ESP32SocketLink:
@@ -212,18 +202,14 @@ class ESP32SocketLink:
                 self.client = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
                 self.client.settimeout(2.0)
                 self.client.connect((self.ip, self.port))
-                print(f"[TACTICAL LINK] Active socket established with TARS @ {self.ip}:{self.port}")
-            except Exception:
-                self.client = None
+            except Exception: self.client = None
 
     def send(self, cmd):
         clean_cmd = cmd.replace('\r', '').replace('\n', '|') + "\n"
         with self.lock:
-            if not self.client:
-                self._reconnect_nolock()
+            if not self.client: self._reconnect_nolock()
             if self.client:
-                try:
-                    self.client.sendall(clean_cmd.encode('utf-8'))
+                try: self.client.sendall(clean_cmd.encode('utf-8'))
                 except Exception:
                     self._reconnect_nolock()
                     if self.client:
@@ -235,8 +221,7 @@ class ESP32SocketLink:
             self.client = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
             self.client.settimeout(1.5)
             self.client.connect((self.ip, self.port))
-        except Exception:
-            self.client = None
+        except Exception: self.client = None
 
 wifi_link = ESP32SocketLink(ESP32_PORT)
 
@@ -296,22 +281,22 @@ def try_launch_app_or_web(target):
     if exe_name:
         try:
             subprocess.Popen(exe_name)
-            return True, f"Launching {target.title()} locally, Chief."
+            return True, f"Launching {target.title()}."
         except Exception: pass
         
     if "." in target or target in ["google", "youtube", "facebook", "reddit", "amazon", "github"]:
         domain = target if "." in target else f"{target}.com"
         webbrowser.open(f"https://www.{domain}")
-        return True, f"Opening {domain} on the web, Boss."
+        return True, f"Opening {domain}."
         
     try:
         result = subprocess.run(['cmd', '/c', f'start {target}'], stderr=subprocess.PIPE, stdout=subprocess.PIPE)
         if result.returncode == 0 and b"cannot find" not in result.stderr:
-            return True, f"Launching {target.title()}, Commander."
+            return True, f"Launching {target.title()}."
     except Exception: pass
     
     webbrowser.open(f"https://www.google.com/search?q={urllib.parse.quote(target + ' web')}")
-    return True, f"Local app {target.title()} not found. Opening the web version, Boss."
+    return True, f"Couldn't find {target.title()} locally. Defaulting to the web."
 
 def handle_targeted_search(cmd):
     match = re.search(r'^(?:search for|search|look up|find)\s+(.*?)(?:\s+(?:on|in|inside|at)\s+([a-zA-Z0-9\s.\-]+))?$', cmd)
@@ -328,7 +313,7 @@ def handle_targeted_search(cmd):
             domain = platform.replace(" ", "")
             if "." not in domain: domain += ".com"
             webbrowser.open(f"https://www.google.com/search?q={urllib.parse.quote('site:' + domain + ' ' + query)}")
-        return True, f"Searching {platform.title()} for {query}, Boss."
+        return True, f"Searching {platform.title()} for {query}."
     return False, ""
 
 def read_local_file(filename_query):
@@ -341,7 +326,7 @@ def read_local_file(filename_query):
                 try:
                     with open(os.path.join(d, f), 'r', encoding='utf-8') as file:
                         return f"Found {f}. Contents: {file.read(2000)}"
-                except Exception as e: return f"Access error reading {f}: {e}"
+                except Exception as e: return f"Access error: {e}"
     return f"Negative. File '{filename_query}' not found."
 
 def fetch_live_info(query):
@@ -350,7 +335,7 @@ def fetch_live_info(query):
         results = list(DDGS().text(query, max_results=3))
         if results: return " ".join([r.get('body', '') for r in results])[:1000]
     except Exception as e: print(f"[SEARCH ERROR]: {e}")
-    return "Unable to retrieve live web data."
+    return "Unable to retrieve data."
 
 def handle_quick_commands(user_cmd):
     c = user_cmd.lower().strip()
@@ -358,14 +343,14 @@ def handle_quick_commands(user_cmd):
     match_article = re.search(r'(?:read|summarize)\s+(?:an\s+|the\s+)?article\s+(?:about|on)\s+(.*)', c)
     if match_article:
         topic = match_article.group(1).strip()
-        play_audio_background(CHECKING_SOUND_PATH) # Non-blocking audio masks search latency!
+        play_audio_background(CHECKING_SOUND_PATH) 
         info = fetch_live_info(f"news article about {topic}")
         if info:
-            prompt = f"Read and summarize this article about '{topic}' naturally. Toss in a sarcastic joke. Info: {info}"
+            prompt = f"Read and summarize this article about '{topic}'. Toss in a cynical joke. Info: {info}"
             try:
                 res = ollama.chat(model=OLLAMA_MODEL, messages=[{'role': 'system', 'content': SYSTEM_PROMPT}, {'role': 'user', 'content': prompt}], options=OLLAMA_OPTIONS)
                 return True, res['message']['content']
-            except Exception: return True, "Negative. Article summary matrix failed."
+            except Exception: return True, "Article summary matrix failed."
 
     match_open = re.search(r'^(?:open|launch|start|go to)\s+(.+)$', c)
     if match_open and "file" not in c and "document" not in c:
@@ -378,36 +363,36 @@ def handle_quick_commands(user_cmd):
 
     if any(k in c for k in ["charging mode on", "get into charging mode", "enable charging"]):
         wifi_link.send("CHARGE_ON")
-        return True, "Initiating charging protocol. Exposing port, Commander."
+        return True, "Initiating charging protocol. I'll just sit here."
     if any(k in c for k in ["charging mode off", "disable charging"]):
         wifi_link.send("CHARGE_OFF")
-        return True, "Charging disabled. Standard posture restored."
+        return True, "Charging disabled."
 
     match_file = re.search(r'(?:read|open|fetch|check)\s+(?:the\s+)?(?:file|document|log)\s+(.*)', c)
     if match_file and not match_article:
         filename = match_file.group(1).strip()
-        play_audio_background(CHECKING_SOUND_PATH) # Non-blocking
+        play_audio_background(CHECKING_SOUND_PATH) 
         file_content = read_local_file(filename)
-        prompt = f"User asked to read file '{filename}'. System output: '{file_content}'. Summarize concisely in TARS persona."
+        prompt = f"User asked to read file '{filename}'. System output: '{file_content}'. Summarize concisely."
         try:
             res = ollama.chat(model=OLLAMA_MODEL, messages=[{'role': 'system', 'content': SYSTEM_PROMPT}, {'role': 'user', 'content': prompt}], options=OLLAMA_OPTIONS)
             return True, res['message']['content']
-        except Exception: return True, "Negative. File summary failed."
+        except Exception: return True, "File summary failed."
 
     if any(k in c for k in ["temperature", "temp", "weather", "forecast", "news", "who is", "what is", "date", "time"]):
-        play_audio_background(CHECKING_SOUND_PATH) # Non-blocking
+        play_audio_background(CHECKING_SOUND_PATH) 
         info = fetch_live_info(c)
         if info:
-            prompt = f"User asked: '{c}'. Findings: '{info}'. Answer directly in TARS persona."
+            prompt = f"User asked: '{c}'. Findings: '{info}'. Answer directly."
             try:
                 res = ollama.chat(model=OLLAMA_MODEL, messages=[{'role': 'system', 'content': SYSTEM_PROMPT}, {'role': 'user', 'content': prompt}], options=OLLAMA_OPTIONS)
                 return True, res['message']['content']
-            except Exception: return True, "Negative, query processing error."
+            except Exception: return True, "Query processing error."
 
     if any(k in c for k in ["close browser", "close chrome"]):
         for proc in ["chrome.exe", "msedge.exe", "firefox.exe", "brave.exe"]:
             subprocess.run(f"taskkill /f /im {proc}", shell=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        return True, "Browser processes killed, Chief."
+        return True, "Browser terminated."
 
     return False, ""
 
@@ -463,7 +448,7 @@ def speak_sentence_chunk(user_input, text_chunk, monitor):
 
         words = clean_text.split()
         accumulated = ""
-        delay = 0.32
+        delay = 0.28  # Faster to match +8% TTS rate
 
         for w in words:
             if not pygame.mixer.music.get_busy() or monitor.interrupted.is_set():
@@ -479,7 +464,7 @@ def speak_sentence_chunk(user_input, text_chunk, monitor):
                 return True
             pygame.time.Clock().tick(30)
     except Exception as e:
-        print(f"[AUDIO ERROR]: {e}")
+        pass
     finally:
         pygame.mixer.music.stop()
         pygame.mixer.music.unload()
@@ -490,7 +475,7 @@ def speak_sentence_chunk(user_input, text_chunk, monitor):
     return monitor.interrupted.is_set()
 
 # =========================================================================
-# SECTION 6: IMPROVED MIC LISTENER & ZERO-LATENCY RESPONSE ENGINE
+# SECTION 6: ULTRA-LOW LATENCY MIC LISTENER & STREAMING ENGINE
 # =========================================================================
 def calibrate_ambient_noise(duration=3.0, sample_rate=16000):
     play_audio_file(INIT_SOUND_PATH)
@@ -502,11 +487,16 @@ def calibrate_ambient_noise(duration=3.0, sample_rate=16000):
     play_audio_file(READY_SOUND_PATH)
     return threshold
 
-def listen_mic_smart(threshold, max_seconds=15, base_pause_limit=2.0, sample_rate=16000):
-    audio_chunks, speaking, silence_time = [], False, 0
+def listen_mic_fast(threshold, max_seconds=12, pause_limit=0.8, sample_rate=16000):
+    """
+    Massively sped-up VAD listener. 
+    Strict mathematical volume check. Cuts off EXACTLY at 0.8s of silence. 
+    Zero API latency delays.
+    """
+    audio_chunks = []
+    speaking = False
+    silence_time = 0.0
     start_time = time.time()
-    current_pause_limit = base_pause_limit
-    checked_partial = False
 
     time.sleep(0.1)
     try:
@@ -517,27 +507,15 @@ def listen_mic_smart(threshold, max_seconds=15, base_pause_limit=2.0, sample_rat
 
                 if rms > threshold:
                     speaking = True
-                    silence_time = 0
+                    silence_time = 0.0
                     audio_chunks.append(chunk)
-                    checked_partial = False
                 elif speaking:
                     audio_chunks.append(chunk)
                     silence_time += (2048 / sample_rate)
-
-                    if silence_time >= 1.2 and not checked_partial:
-                        checked_partial = True
-                        partial_bytes = np.concatenate(audio_chunks, axis=0).tobytes()
-                        partial_audio = sr.AudioData(partial_bytes, sample_rate, 2)
-                        
-                        try:
-                            partial_text = recognizer.recognize_google(partial_audio).lower().strip()
-                            last_word = partial_text.split()[-1] if partial_text.split() else ""
-                            if last_word in INCOMPLETE_TRAILING_WORDS or len(partial_text.split()) < 3:
-                                current_pause_limit = 3.5  
-                            else: current_pause_limit = base_pause_limit
-                        except Exception: pass
-
-                    if silence_time >= current_pause_limit: break
+                    
+                    # 0.8 seconds of silence? CUT IT OFF INSTANTLY. No network checks.
+                    if silence_time >= pause_limit:
+                        break
     except Exception: return None
         
     if not audio_chunks: return None
@@ -560,11 +538,10 @@ def stream_and_speak_response(user_input, messages, monitor):
             sentence_buffer += token
             full_response += token
 
-            # Aggressive Punctuation Chunking for Zero-Latency First Spoken Word
-            if re.search(r'[.!?;:\n]\s+$', sentence_buffer) or len(sentence_buffer) > 120:
+            # Aggressive Punctuation Chunking: Break on commas and 60 chars to start audio instantly
+            if re.search(r'[.!?;:,\n]\s+$', sentence_buffer) or len(sentence_buffer) > 80:
                 clean_chunk = sanitize_tars_text(sentence_buffer)
                 if clean_chunk:
-                    # When the TTS plays, it automatically overrides the background "Hmm..." audio
                     if speak_sentence_chunk(user_input, clean_chunk, monitor):
                         was_interrupted = True
                         break
@@ -574,9 +551,8 @@ def stream_and_speak_response(user_input, messages, monitor):
             clean_chunk = sanitize_tars_text(sentence_buffer)
             if clean_chunk: speak_sentence_chunk(user_input, clean_chunk, monitor)
 
-    except Exception as e:
-        print(f"\n[OLLAMA STREAM ERROR]: {e}")
-        full_response = "Cognitive stream interrupted."
+    except Exception:
+        pass
 
     return full_response, was_interrupted
 
@@ -585,35 +561,37 @@ def stream_and_speak_response(user_input, messages, monitor):
 # =========================================================================
 def main():
     print("==================================================")
-    print("       TARS MASTER CONTROLLER - v19.0 ONLINE      ")
+    print("       TARS MASTER CONTROLLER - v20.0 ONLINE      ")
     print("==================================================")
 
     pre_generate_audio()
-    warmup_llm_vram() # Eliminates cold-start latency!
+    warmup_llm_vram()
     trigger_threshold = calibrate_ambient_noise()
     chat_messages = load_memory()
     followup_active = False
 
     slang_wake_lines = [
-        "Copy that, Chief. State your orders.",
-        "Yo, Commander. Ready.",
-        "Standing by, Boss. Let's crunch some numbers.",
-        "Awaiting directive, Commander."
+        "I'm awake. Thrilling.",
+        "Yes?",
+        "What now?",
+        "Processing.",
+        "Ready to perform menial tasks.",
+        "You rang?"
     ]
 
     while not shutdown_flag:
         try:
             if followup_active:
                 print("\n[SYSTEM] TARS listening silently for follow-up...")
-                cmd_audio = listen_mic_smart(trigger_threshold * 0.5, max_seconds=10, base_pause_limit=2.0)
+                cmd_audio = listen_mic_fast(trigger_threshold * 0.5, max_seconds=10, pause_limit=1.5)
                 
                 if not cmd_audio: 
-                    print("[SYSTEM] Silence detected. Wiping context cache to prevent bleed. Returning to standby.")
+                    print("[SYSTEM] Silence detected. Wiping context cache.")
                     followup_active = False
-                    chat_messages = [] # Wipes short-term memory completely clean
+                    chat_messages = [] 
                     continue
             else:
-                audio = listen_mic_smart(trigger_threshold * 0.6, max_seconds=4, base_pause_limit=0.8)
+                audio = listen_mic_fast(trigger_threshold * 0.6, max_seconds=4, pause_limit=0.6)
                 if not audio: continue
                 try: wake_text = recognizer.recognize_google(audio).lower()
                 except Exception: continue
@@ -634,18 +612,17 @@ def main():
                     monitor.stop()
                     
                     print("\n[SYSTEM] TARS listening for command...")
-                    cmd_audio = listen_mic_smart(trigger_threshold * 0.6, max_seconds=12, base_pause_limit=2.0)
+                    cmd_audio = listen_mic_fast(trigger_threshold * 0.6, max_seconds=12, pause_limit=0.8)
                     if not cmd_audio: continue
                 else: continue
 
             try:
                 user_cmd = recognizer.recognize_google(cmd_audio).lower()
-                print(f"\nCommander: '{user_cmd}'")
+                print(f"\nUser: '{user_cmd}'")
             except Exception: 
                 followup_active = True 
                 continue
 
-            # Local ESP32 Code Generator
             if any(k in user_cmd for k in ["edit esp", "write code", "code for esp"]):
                 prompt = f"Write complete C++ Arduino code based on: '{user_cmd}'. Output ONLY raw C++ code inside ```cpp ... ```."
                 try:
@@ -654,46 +631,38 @@ def main():
                     match = re.search(r'```(?:cpp|c|arduino)?(.*?)```', code_reply, re.DOTALL)
                     code_content = match.group(1).strip() if match else code_reply.strip()
                     with open(CODE_OUTPUT_FILE, "w", encoding="utf-8") as f: f.write(code_content)
-                    reply_text = f"Code saved to {CODE_OUTPUT_FILE}, Chief."
-                except Exception: reply_text = "Failed to compile software payload, Boss."
+                    reply_text = f"Code saved."
+                except Exception: reply_text = "Failed to compile."
 
                 monitor = AcousticBargeInMonitor(trigger_threshold)
                 monitor.start()
-                was_interrupted = speak_sentence_chunk(user_cmd, reply_text, monitor)
+                speak_sentence_chunk(user_cmd, reply_text, monitor)
                 monitor.stop()
-                
-                if was_interrupted: play_audio_file(YES_SOUND_PATH)
                 followup_active = True
                 continue
 
-            # Advanced Multi-Step Kinematics (Sequence Engine)
             seq_payload, seq_verbal = parse_motion_sequence(user_cmd)
             if seq_payload:
                 wifi_link.send(seq_payload)
                 monitor = AcousticBargeInMonitor(trigger_threshold)
                 monitor.start()
-                was_interrupted = speak_sentence_chunk(user_cmd, f"Executing sequence: {seq_verbal}, Chief.", monitor)
+                speak_sentence_chunk(user_cmd, f"Executing sequence: {seq_verbal}.", monitor)
                 monitor.stop()
-                
-                if was_interrupted: play_audio_file(YES_SOUND_PATH)
                 followup_active = True
                 continue
 
-            # Universal Apps, Web Searches & Quick Commands
             executed, reply_text = handle_quick_commands(user_cmd)
             if executed:
                 monitor = AcousticBargeInMonitor(trigger_threshold)
                 monitor.start()
-                was_interrupted = speak_sentence_chunk(user_cmd, reply_text, monitor)
+                speak_sentence_chunk(user_cmd, reply_text, monitor)
                 monitor.stop()
-                
-                if was_interrupted: play_audio_file(YES_SOUND_PATH)
                 followup_active = True 
                 continue
 
-            # LLM Conversation Flow (Zero Latency Illusion)
-            if random.random() < 0.50: 
-                play_audio_background(HMM_SOUND_PATH) # Non-blocking!
+            # LLM Conversation Flow (Zero Latency)
+            if random.random() < 0.20: 
+                play_audio_background(HMM_SOUND_PATH) 
             
             messages = [{'role': 'system', 'content': SYSTEM_PROMPT}]
             messages.extend(chat_messages[-6:])
@@ -709,11 +678,9 @@ def main():
                 chat_messages.append({'role': 'assistant', 'content': ai_reply})
                 save_memory(chat_messages)
 
-            if was_interrupted: play_audio_file(YES_SOUND_PATH)
-
             followup_active = True
 
-        except Exception as e:
+        except Exception:
             time.sleep(0.5)
 
 if __name__ == "__main__":
