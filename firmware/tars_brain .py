@@ -42,7 +42,7 @@ CODE_OUTPUT_FILE = "tars_esp32_update.ino"
 OLLAMA_OPTIONS = {
     "num_predict": 180,
     "num_ctx": 1024,
-    "temperature": 0.7  # Slightly higher for more creative/natural humor
+    "temperature": 0.7  
 }
 
 SYSTEM_PROMPT = (
@@ -121,7 +121,50 @@ def save_memory(chat_history):
     except Exception: pass
 
 # =========================================================================
-# SECTION 2: mDNS AUTO-DISCOVERY & HARDWARE LINK
+# SECTION 2: AUDIO ENGINE, BACKGROUND PLAYBACK & VRAM WARMUP
+# =========================================================================
+async def generate_tars_speech(text, file_path):
+    tts = edge_tts.Communicate(text=text, voice="en-US-ChristopherNeural", pitch="-2Hz", rate="+0%")
+    await tts.save(file_path)
+
+def pre_generate_audio():
+    print("[SYSTEM] Verifying core audio files...")
+    if not os.path.exists(YES_SOUND_PATH): asyncio.run(generate_tars_speech("Yes, Chief?", YES_SOUND_PATH))
+    if not os.path.exists(INIT_SOUND_PATH): asyncio.run(generate_tars_speech("TARS online. Humor at 75 percent. Ready to crunch data, Boss.", INIT_SOUND_PATH))
+    if not os.path.exists(READY_SOUND_PATH): asyncio.run(generate_tars_speech("Systems nominal and calibrated. Zero stress.", READY_SOUND_PATH))
+    if not os.path.exists(CHECKING_SOUND_PATH): asyncio.run(generate_tars_speech("Let me check, Commander.", CHECKING_SOUND_PATH))
+    if not os.path.exists(HMM_SOUND_PATH): asyncio.run(generate_tars_speech("Hmm...", HMM_SOUND_PATH))
+    if not os.path.exists(HUH_SOUND_PATH): asyncio.run(generate_tars_speech("Huh!", HUH_SOUND_PATH))
+
+def play_audio_file(filepath):
+    """Blocking audio playback."""
+    if not os.path.exists(filepath): return
+    try:
+        pygame.mixer.music.load(filepath)
+        pygame.mixer.music.play()
+        while pygame.mixer.music.get_busy(): pygame.time.Clock().tick(20)
+        pygame.mixer.music.unload()
+    except Exception: pass
+
+def play_audio_background(filepath):
+    """Non-blocking audio playback. Creates the illusion of zero-latency while LLM thinks."""
+    if not os.path.exists(filepath): return
+    try:
+        pygame.mixer.music.load(filepath)
+        pygame.mixer.music.play()
+    except Exception: pass
+
+def warmup_llm_vram():
+    """Fires a dummy request to preload the AI model into memory, eliminating cold-start latency."""
+    print("[SYSTEM] Warming up AI Neural Matrix (VRAM Preload)...")
+    try:
+        ollama.chat(model=OLLAMA_MODEL, messages=[{'role': 'user', 'content': 'init'}])
+        print("[SYSTEM] VRAM Preload Complete. Zero-latency mode engaged.")
+    except Exception as e:
+        print(f"[WARNING] VRAM Warmup failed: {e}")
+
+# =========================================================================
+# SECTION 3: mDNS AUTO-DISCOVERY & HARDWARE LINK
 # =========================================================================
 def discover_tars_ip():
     print("[NETWORK] Resolving TARS via mDNS (tars.local)...")
@@ -219,30 +262,8 @@ def update_oled_display(input_text, output_text, max_cols=21, max_rows=4):
     visible = wrapped[-max_rows:] if len(wrapped) > max_rows else wrapped
     wifi_link.send("DISP:" + "|".join(visible))
 
-async def generate_tars_speech(text, file_path):
-    tts = edge_tts.Communicate(text=text, voice="en-US-ChristopherNeural", pitch="-2Hz", rate="+0%")
-    await tts.save(file_path)
-
-def pre_generate_audio():
-    print("[SYSTEM] Verifying core audio files...")
-    if not os.path.exists(YES_SOUND_PATH): asyncio.run(generate_tars_speech("Yes, Chief?", YES_SOUND_PATH))
-    if not os.path.exists(INIT_SOUND_PATH): asyncio.run(generate_tars_speech("TARS online. Humor at 75 percent. Ready to crunch data, Boss.", INIT_SOUND_PATH))
-    if not os.path.exists(READY_SOUND_PATH): asyncio.run(generate_tars_speech("Systems nominal and calibrated. Zero stress.", READY_SOUND_PATH))
-    if not os.path.exists(CHECKING_SOUND_PATH): asyncio.run(generate_tars_speech("Let me check, Commander.", CHECKING_SOUND_PATH))
-    if not os.path.exists(HMM_SOUND_PATH): asyncio.run(generate_tars_speech("Hmm...", HMM_SOUND_PATH))
-    if not os.path.exists(HUH_SOUND_PATH): asyncio.run(generate_tars_speech("Huh!", HUH_SOUND_PATH))
-
-def play_audio_file(filepath):
-    if not os.path.exists(filepath): return
-    try:
-        pygame.mixer.music.load(filepath)
-        pygame.mixer.music.play()
-        while pygame.mixer.music.get_busy(): pygame.time.Clock().tick(20)
-        pygame.mixer.music.unload()
-    except Exception: pass
-
 # =========================================================================
-# SECTION 3: SEQUENCE PARSER, APPS, ARTICLES & WEB SEARCH
+# SECTION 4: SEQUENCE PARSER, APPS, ARTICLES & WEB SEARCH
 # =========================================================================
 def parse_motion_sequence(text):
     cmd_list = []
@@ -334,11 +355,10 @@ def fetch_live_info(query):
 def handle_quick_commands(user_cmd):
     c = user_cmd.lower().strip()
 
-    # Read Article Logic
     match_article = re.search(r'(?:read|summarize)\s+(?:an\s+|the\s+)?article\s+(?:about|on)\s+(.*)', c)
     if match_article:
         topic = match_article.group(1).strip()
-        play_audio_file(CHECKING_SOUND_PATH)
+        play_audio_background(CHECKING_SOUND_PATH) # Non-blocking audio masks search latency!
         info = fetch_live_info(f"news article about {topic}")
         if info:
             prompt = f"Read and summarize this article about '{topic}' naturally. Toss in a sarcastic joke. Info: {info}"
@@ -366,7 +386,7 @@ def handle_quick_commands(user_cmd):
     match_file = re.search(r'(?:read|open|fetch|check)\s+(?:the\s+)?(?:file|document|log)\s+(.*)', c)
     if match_file and not match_article:
         filename = match_file.group(1).strip()
-        play_audio_file(CHECKING_SOUND_PATH)
+        play_audio_background(CHECKING_SOUND_PATH) # Non-blocking
         file_content = read_local_file(filename)
         prompt = f"User asked to read file '{filename}'. System output: '{file_content}'. Summarize concisely in TARS persona."
         try:
@@ -375,7 +395,7 @@ def handle_quick_commands(user_cmd):
         except Exception: return True, "Negative. File summary failed."
 
     if any(k in c for k in ["temperature", "temp", "weather", "forecast", "news", "who is", "what is", "date", "time"]):
-        play_audio_file(CHECKING_SOUND_PATH)
+        play_audio_background(CHECKING_SOUND_PATH) # Non-blocking
         info = fetch_live_info(c)
         if info:
             prompt = f"User asked: '{c}'. Findings: '{info}'. Answer directly in TARS persona."
@@ -392,7 +412,7 @@ def handle_quick_commands(user_cmd):
     return False, ""
 
 # =========================================================================
-# SECTION 4: ACOUSTIC BARGE-IN & WORD-BY-WORD OLED SYNCHRONIZATION
+# SECTION 5: ACOUSTIC BARGE-IN & WORD-BY-WORD OLED SYNCHRONIZATION
 # =========================================================================
 class AcousticBargeInMonitor:
     def __init__(self, threshold, sample_rate=16000):
@@ -470,7 +490,7 @@ def speak_sentence_chunk(user_input, text_chunk, monitor):
     return monitor.interrupted.is_set()
 
 # =========================================================================
-# SECTION 5: IMPROVED MIC LISTENER & STREAMING RESPONSE ENGINE
+# SECTION 6: IMPROVED MIC LISTENER & ZERO-LATENCY RESPONSE ENGINE
 # =========================================================================
 def calibrate_ambient_noise(duration=3.0, sample_rate=16000):
     play_audio_file(INIT_SOUND_PATH)
@@ -483,10 +503,6 @@ def calibrate_ambient_noise(duration=3.0, sample_rate=16000):
     return threshold
 
 def listen_mic_smart(threshold, max_seconds=15, base_pause_limit=2.0, sample_rate=16000):
-    """
-    Highly forgiving listening function. 
-    Waits 2.0s normally, and up to 3.5s if the user pauses on an incomplete word.
-    """
     audio_chunks, speaking, silence_time = [], False, 0
     start_time = time.time()
     current_pause_limit = base_pause_limit
@@ -517,7 +533,7 @@ def listen_mic_smart(threshold, max_seconds=15, base_pause_limit=2.0, sample_rat
                             partial_text = recognizer.recognize_google(partial_audio).lower().strip()
                             last_word = partial_text.split()[-1] if partial_text.split() else ""
                             if last_word in INCOMPLETE_TRAILING_WORDS or len(partial_text.split()) < 3:
-                                current_pause_limit = 3.5  # Give the user plenty of time to finish their thought
+                                current_pause_limit = 3.5  
                             else: current_pause_limit = base_pause_limit
                         except Exception: pass
 
@@ -544,9 +560,11 @@ def stream_and_speak_response(user_input, messages, monitor):
             sentence_buffer += token
             full_response += token
 
-            if re.search(r'[.!?]\s+$', sentence_buffer) or len(sentence_buffer) > 120:
+            # Aggressive Punctuation Chunking for Zero-Latency First Spoken Word
+            if re.search(r'[.!?;:\n]\s+$', sentence_buffer) or len(sentence_buffer) > 120:
                 clean_chunk = sanitize_tars_text(sentence_buffer)
                 if clean_chunk:
+                    # When the TTS plays, it automatically overrides the background "Hmm..." audio
                     if speak_sentence_chunk(user_input, clean_chunk, monitor):
                         was_interrupted = True
                         break
@@ -563,22 +581,20 @@ def stream_and_speak_response(user_input, messages, monitor):
     return full_response, was_interrupted
 
 # =========================================================================
-# SECTION 6: MASTER EXECUTION LOOP
+# SECTION 7: MASTER EXECUTION LOOP
 # =========================================================================
 def main():
     print("==================================================")
-    print("       TARS MASTER CONTROLLER - v18.0 ONLINE      ")
+    print("       TARS MASTER CONTROLLER - v19.0 ONLINE      ")
     print("==================================================")
 
     pre_generate_audio()
+    warmup_llm_vram() # Eliminates cold-start latency!
     trigger_threshold = calibrate_ambient_noise()
     chat_messages = load_memory()
     followup_active = False
 
     slang_wake_lines = [
-        "Huh!",
-        "Huh? What?",
-        "Huh? I was resting my processors. What is it?",
         "Copy that, Chief. State your orders.",
         "Yo, Commander. Ready.",
         "Standing by, Boss. Let's crunch some numbers.",
@@ -610,8 +626,7 @@ def main():
                     monitor = AcousticBargeInMonitor(trigger_threshold)
                     monitor.start()
                     
-                    # Random chance to play the fast "Huh!" audio file instead of TTS
-                    if random.random() < 0.2:
+                    if random.random() < 0.35:
                         play_audio_file(HUH_SOUND_PATH)
                     else:
                         speak_sentence_chunk("Wake Up", random.choice(slang_wake_lines), monitor)
@@ -676,8 +691,9 @@ def main():
                 followup_active = True 
                 continue
 
-            # LLM Conversation Flow
-            if random.random() < 0.30: play_audio_file(HMM_SOUND_PATH)
+            # LLM Conversation Flow (Zero Latency Illusion)
+            if random.random() < 0.50: 
+                play_audio_background(HMM_SOUND_PATH) # Non-blocking!
             
             messages = [{'role': 'system', 'content': SYSTEM_PROMPT}]
             messages.extend(chat_messages[-6:])
