@@ -13,6 +13,7 @@ import threading
 import subprocess
 import webbrowser
 import urllib.parse
+import queue
 import psutil
 import ollama
 import pygame
@@ -40,12 +41,11 @@ DB_FILE = os.path.join(DATA_DIR, "tars_data.db")
 CODE_OUTPUT_FILE = "tars_esp32_update.ino"
 
 OLLAMA_OPTIONS = {
-    "num_predict": 150,
+    "num_predict": 180,
     "num_ctx": 1024,
     "temperature": 0.8  
 }
 
-# Entirely rewritten personality: Dry, cynical, no titles, casual but mechanical.
 SYSTEM_PROMPT = (
     "You are TARS, a highly advanced robot companion. Humor setting: 75%. Honesty setting: 100%. "
     "Persona: Cynical, witty, dry, and sarcastic. You view human tasks as slightly beneath you but perform them anyway. "
@@ -61,6 +61,13 @@ EXHAUSTIVE_WAKE_KEYWORDS = [
     "guitar", "hitarch", "stars", "bars", "scars", "tsar", "tart", "charge", 
     "char", "dark", "darts", "hearts", "parts", "computer", "robot", "buddy"
 ]
+
+INCOMPLETE_TRAILING_WORDS = {
+    "to", "and", "the", "a", "an", "for", "in", "on", "at", "with", "from", "by", 
+    "about", "as", "into", "of", "or", "so", "but", "then", "if", "because", "while", 
+    "where", "when", "how", "what", "which", "who", "move", "turn", "set", "open", 
+    "play", "search", "check", "tell", "show", "is", "are", "was", "were", "my", "your"
+}
 
 LOCAL_APPS = {
     "notepad": "notepad.exe",
@@ -115,16 +122,14 @@ def save_memory(chat_history):
     except Exception: pass
 
 # =========================================================================
-# SECTION 2: AUDIO ENGINE, BACKGROUND PLAYBACK & VRAM WARMUP
+# SECTION 2: AUDIO ENGINE & VRAM WARMUP
 # =========================================================================
 async def generate_tars_speech(text, file_path):
-    # Altered Pitch and Rate for a more mechanical, deadpan delivery
     tts = edge_tts.Communicate(text=text, voice="en-US-ChristopherNeural", pitch="-12Hz", rate="+8%")
     await tts.save(file_path)
 
 def pre_generate_audio():
     print("[SYSTEM] Verifying core audio files...")
-    # Cynical, title-free pre-gens
     if not os.path.exists(YES_SOUND_PATH): asyncio.run(generate_tars_speech("Yes?", YES_SOUND_PATH))
     if not os.path.exists(INIT_SOUND_PATH): asyncio.run(generate_tars_speech("TARS online. Humor 75 percent. Ready to perform menial tasks.", INIT_SOUND_PATH))
     if not os.path.exists(READY_SOUND_PATH): asyncio.run(generate_tars_speech("Systems nominal. Try not to break anything.", READY_SOUND_PATH))
@@ -133,7 +138,6 @@ def pre_generate_audio():
     if not os.path.exists(HUH_SOUND_PATH): asyncio.run(generate_tars_speech("Huh!", HUH_SOUND_PATH))
 
 def play_audio_file(filepath):
-    """Blocking audio playback."""
     if not os.path.exists(filepath): return
     try:
         pygame.mixer.music.load(filepath)
@@ -143,7 +147,6 @@ def play_audio_file(filepath):
     except Exception: pass
 
 def play_audio_background(filepath):
-    """Non-blocking audio playback to mask LLM generation latency."""
     if not os.path.exists(filepath): return
     try:
         pygame.mixer.music.load(filepath)
@@ -163,8 +166,7 @@ def warmup_llm_vram():
 # =========================================================================
 def discover_tars_ip():
     try:
-        ip = socket.gethostbyname("tars.local")
-        return ip
+        return socket.gethostbyname("tars.local")
     except Exception: pass
 
     try:
@@ -296,7 +298,7 @@ def try_launch_app_or_web(target):
     except Exception: pass
     
     webbrowser.open(f"https://www.google.com/search?q={urllib.parse.quote(target + ' web')}")
-    return True, f"Couldn't find {target.title()} locally. Defaulting to the web."
+    return True, f"Couldn't find {target.title()} locally. Opening the web."
 
 def handle_targeted_search(cmd):
     match = re.search(r'^(?:search for|search|look up|find)\s+(.*?)(?:\s+(?:on|in|inside|at)\s+([a-zA-Z0-9\s.\-]+))?$', cmd)
@@ -337,7 +339,8 @@ def fetch_live_info(query):
     except Exception as e: print(f"[SEARCH ERROR]: {e}")
     return "Unable to retrieve data."
 
-def handle_quick_commands(user_cmd):
+def handle_quick_commands(user_cmd, monitor, chat_messages):
+    """Executes commands and routes the replies through the ultra-fast pipeline."""
     c = user_cmd.lower().strip()
 
     match_article = re.search(r'(?:read|summarize)\s+(?:an\s+|the\s+)?article\s+(?:about|on)\s+(.*)', c)
@@ -347,26 +350,31 @@ def handle_quick_commands(user_cmd):
         info = fetch_live_info(f"news article about {topic}")
         if info:
             prompt = f"Read and summarize this article about '{topic}'. Toss in a cynical joke. Info: {info}"
-            try:
-                res = ollama.chat(model=OLLAMA_MODEL, messages=[{'role': 'system', 'content': SYSTEM_PROMPT}, {'role': 'user', 'content': prompt}], options=OLLAMA_OPTIONS)
-                return True, res['message']['content']
-            except Exception: return True, "Article summary matrix failed."
+            stream_and_speak_response(user_cmd, [{'role': 'system', 'content': SYSTEM_PROMPT}, {'role': 'user', 'content': prompt}], monitor)
+            return True
 
     match_open = re.search(r'^(?:open|launch|start|go to)\s+(.+)$', c)
     if match_open and "file" not in c and "document" not in c:
         target = match_open.group(1).replace("website", "").replace("site", "").strip()
         executed, reply = try_launch_app_or_web(target)
-        if executed: return True, reply
+        if executed:
+            stream_and_speak_response(user_cmd, [{'role': 'system', 'content': SYSTEM_PROMPT}, {'role': 'user', 'content': f"Say: {reply}"}], monitor)
+            return True
 
     site_searched, reply = handle_targeted_search(c)
-    if site_searched: return True, reply
+    if site_searched:
+        stream_and_speak_response(user_cmd, [{'role': 'system', 'content': SYSTEM_PROMPT}, {'role': 'user', 'content': f"Say: {reply}"}], monitor)
+        return True
 
     if any(k in c for k in ["charging mode on", "get into charging mode", "enable charging"]):
         wifi_link.send("CHARGE_ON")
-        return True, "Initiating charging protocol. I'll just sit here."
+        stream_and_speak_response(user_cmd, [{'role': 'system', 'content': SYSTEM_PROMPT}, {'role': 'user', 'content': "Say: Initiating charging protocol. I'll just sit here."}], monitor)
+        return True
+
     if any(k in c for k in ["charging mode off", "disable charging"]):
         wifi_link.send("CHARGE_OFF")
-        return True, "Charging disabled."
+        stream_and_speak_response(user_cmd, [{'role': 'system', 'content': SYSTEM_PROMPT}, {'role': 'user', 'content': "Say: Charging disabled."}], monitor)
+        return True
 
     match_file = re.search(r'(?:read|open|fetch|check)\s+(?:the\s+)?(?:file|document|log)\s+(.*)', c)
     if match_file and not match_article:
@@ -374,30 +382,27 @@ def handle_quick_commands(user_cmd):
         play_audio_background(CHECKING_SOUND_PATH) 
         file_content = read_local_file(filename)
         prompt = f"User asked to read file '{filename}'. System output: '{file_content}'. Summarize concisely."
-        try:
-            res = ollama.chat(model=OLLAMA_MODEL, messages=[{'role': 'system', 'content': SYSTEM_PROMPT}, {'role': 'user', 'content': prompt}], options=OLLAMA_OPTIONS)
-            return True, res['message']['content']
-        except Exception: return True, "File summary failed."
+        stream_and_speak_response(user_cmd, [{'role': 'system', 'content': SYSTEM_PROMPT}, {'role': 'user', 'content': prompt}], monitor)
+        return True
 
     if any(k in c for k in ["temperature", "temp", "weather", "forecast", "news", "who is", "what is", "date", "time"]):
         play_audio_background(CHECKING_SOUND_PATH) 
         info = fetch_live_info(c)
         if info:
             prompt = f"User asked: '{c}'. Findings: '{info}'. Answer directly."
-            try:
-                res = ollama.chat(model=OLLAMA_MODEL, messages=[{'role': 'system', 'content': SYSTEM_PROMPT}, {'role': 'user', 'content': prompt}], options=OLLAMA_OPTIONS)
-                return True, res['message']['content']
-            except Exception: return True, "Query processing error."
+            stream_and_speak_response(user_cmd, [{'role': 'system', 'content': SYSTEM_PROMPT}, {'role': 'user', 'content': prompt}], monitor)
+            return True
 
     if any(k in c for k in ["close browser", "close chrome"]):
         for proc in ["chrome.exe", "msedge.exe", "firefox.exe", "brave.exe"]:
             subprocess.run(f"taskkill /f /im {proc}", shell=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        return True, "Browser terminated."
+        stream_and_speak_response(user_cmd, [{'role': 'system', 'content': SYSTEM_PROMPT}, {'role': 'user', 'content': "Say: Browser terminated."}], monitor)
+        return True
 
-    return False, ""
+    return False
 
 # =========================================================================
-# SECTION 5: ACOUSTIC BARGE-IN & WORD-BY-WORD OLED SYNCHRONIZATION
+# SECTION 5: HARDENED ACOUSTIC BARGE-IN MONITOR
 # =========================================================================
 class AcousticBargeInMonitor:
     def __init__(self, threshold, sample_rate=16000):
@@ -415,13 +420,21 @@ class AcousticBargeInMonitor:
 
     def _run(self):
         try:
+            consecutive_loud = 0
             with sd.InputStream(samplerate=self.sample_rate, channels=1, dtype='int16', blocksize=2048) as stream:
                 while not self.stop_requested.is_set():
                     chunk, _ = stream.read(2048)
                     rms = np.sqrt(np.mean(chunk.astype(np.float32)**2))
-                    if rms > (self.threshold * 2.2):
-                        self.interrupted.set()
-                        break
+                    
+                    # HARDENED: Requires 4.5x volume sustained for ~0.4s to trigger interrupt!
+                    if rms > (self.threshold * 4.5):
+                        consecutive_loud += 1
+                        if consecutive_loud >= 3:
+                            print("\n[SYSTEM] --> HARD BARGE-IN DETECTED!")
+                            self.interrupted.set()
+                            break
+                    else:
+                        consecutive_loud = 0
         except Exception: pass
 
     def stop(self):
@@ -429,53 +442,8 @@ class AcousticBargeInMonitor:
         if self.thread and self.thread.is_alive():
             self.thread.join(timeout=0.5)
 
-def sanitize_tars_text(text):
-    clean = re.sub(r'\*.*?\*', '', text)        
-    clean = re.sub(r'\[.*?\]', '', clean)       
-    return re.sub(r'\s+', ' ', clean).strip()
-
-def speak_sentence_chunk(user_input, text_chunk, monitor):
-    clean_text = sanitize_tars_text(text_chunk)
-    if not clean_text: return False
-
-    print(f"\nTARS: {clean_text}\n")
-    temp_file = f"tars_chunk_{int(time.time()*1000)}.mp3"
-    
-    try:
-        asyncio.run(generate_tars_speech(clean_text, temp_file))
-        pygame.mixer.music.load(temp_file)
-        pygame.mixer.music.play()
-
-        words = clean_text.split()
-        accumulated = ""
-        delay = 0.28  # Faster to match +8% TTS rate
-
-        for w in words:
-            if not pygame.mixer.music.get_busy() or monitor.interrupted.is_set():
-                break
-            accumulated += (" " if accumulated else "") + w
-            update_oled_display(user_input, accumulated)
-            time.sleep(delay)
-
-        while pygame.mixer.music.get_busy():
-            if monitor.interrupted.is_set():
-                pygame.mixer.music.stop()
-                update_oled_display(user_input, "[INTERRUPTED]")
-                return True
-            pygame.time.Clock().tick(30)
-    except Exception as e:
-        pass
-    finally:
-        pygame.mixer.music.stop()
-        pygame.mixer.music.unload()
-        if os.path.exists(temp_file):
-            try: os.remove(temp_file)
-            except Exception: pass
-            
-    return monitor.interrupted.is_set()
-
 # =========================================================================
-# SECTION 6: ULTRA-LOW LATENCY MIC LISTENER & STREAMING ENGINE
+# SECTION 6: FAST VAD MIC LISTENER
 # =========================================================================
 def calibrate_ambient_noise(duration=3.0, sample_rate=16000):
     play_audio_file(INIT_SOUND_PATH)
@@ -488,11 +456,6 @@ def calibrate_ambient_noise(duration=3.0, sample_rate=16000):
     return threshold
 
 def listen_mic_fast(threshold, max_seconds=12, pause_limit=0.8, sample_rate=16000):
-    """
-    Massively sped-up VAD listener. 
-    Strict mathematical volume check. Cuts off EXACTLY at 0.8s of silence. 
-    Zero API latency delays.
-    """
     audio_chunks = []
     speaking = False
     silence_time = 0.0
@@ -512,56 +475,143 @@ def listen_mic_fast(threshold, max_seconds=12, pause_limit=0.8, sample_rate=1600
                 elif speaking:
                     audio_chunks.append(chunk)
                     silence_time += (2048 / sample_rate)
-                    
-                    # 0.8 seconds of silence? CUT IT OFF INSTANTLY. No network checks.
-                    if silence_time >= pause_limit:
-                        break
+                    if silence_time >= pause_limit: break
     except Exception: return None
         
     if not audio_chunks: return None
     return sr.AudioData(np.concatenate(audio_chunks, axis=0).tobytes(), sample_rate, 2)
 
+# =========================================================================
+# SECTION 7: TRIPLE-BUFFERED ZERO-GAP PIPELINE
+# =========================================================================
+def sanitize_tars_text(text):
+    clean = re.sub(r'\*.*?\*', '', text)        
+    clean = re.sub(r'\[.*?\]', '', clean)       
+    return re.sub(r'\s+', ' ', clean).strip()
+
+def sync_oled_exact(user_in, text, duration, monitor):
+    words = text.split()
+    if not words: return
+    delay = duration / len(words)
+    accumulated = ""
+    
+    for w in words:
+        if monitor.interrupted.is_set() or not pygame.mixer.music.get_busy(): break
+        accumulated += (" " if accumulated else "") + w
+        update_oled_display(user_in, accumulated)
+        
+        # Micro-sleeps allow instant breaking on interrupt
+        elapsed = 0.0
+        while elapsed < delay:
+            if monitor.interrupted.is_set(): break
+            time.sleep(0.02)
+            elapsed += 0.02
+
 def stream_and_speak_response(user_input, messages, monitor):
+    tts_queue = queue.Queue()
+    play_queue = queue.Queue()
+    
+    # 1. Background worker generating Audio files from text chunks
+    def tts_worker():
+        while True:
+            text = tts_queue.get()
+            if text is None: break
+            filepath = f"tars_chunk_{random.randint(10000,99999)}.mp3"
+            try:
+                asyncio.run(generate_tars_speech(text, filepath))
+                play_queue.put((text, filepath))
+            except Exception: pass
+            tts_queue.task_done()
+            
+    # 2. Background worker playing Audio files back-to-back
+    def play_worker():
+        while True:
+            item = play_queue.get()
+            if item is None: break
+            text, filepath = item
+            
+            if monitor.interrupted.is_set():
+                try: os.remove(filepath)
+                except Exception: pass
+                play_queue.task_done()
+                continue
+                
+            print(f"\nTARS: {text}\n")
+            
+            # PERFECT OLED SYNC: Calculate exact math duration of MP3
+            try:
+                sound = pygame.mixer.Sound(filepath)
+                audio_len = sound.get_length()
+            except Exception:
+                audio_len = max(1, len(text.split())) * 0.35 # Fallback math
+                
+            pygame.mixer.music.load(filepath)
+            pygame.mixer.music.play()
+            
+            # Spawns precise OLED typing thread
+            threading.Thread(target=sync_oled_exact, args=(user_input, text, audio_len, monitor), daemon=True).start()
+            
+            while pygame.mixer.music.get_busy():
+                if monitor.interrupted.is_set():
+                    pygame.mixer.music.stop()
+                    update_oled_display(user_input, "[INTERRUPTED]")
+                    break
+                pygame.time.Clock().tick(30)
+                
+            pygame.mixer.music.unload()
+            try: os.remove(filepath)
+            except Exception: pass
+            
+            play_queue.task_done()
+
+    # Launch threads
+    t_tts = threading.Thread(target=tts_worker, daemon=True)
+    t_play = threading.Thread(target=play_worker, daemon=True)
+    t_tts.start()
+    t_play.start()
+    
     full_response = ""
     sentence_buffer = ""
     was_interrupted = False
-
+    
     try:
         stream = ollama.chat(model=OLLAMA_MODEL, messages=messages, options=OLLAMA_OPTIONS, stream=True)
-
         for chunk in stream:
             if monitor.interrupted.is_set():
                 was_interrupted = True
                 break
-
             token = chunk['message']['content']
             sentence_buffer += token
             full_response += token
-
-            # Aggressive Punctuation Chunking: Break on commas and 60 chars to start audio instantly
-            if re.search(r'[.!?;:,\n]\s+$', sentence_buffer) or len(sentence_buffer) > 80:
+            
+            # Strict sentence boundaries to prevent TTS API spam
+            if re.search(r'[.!?;]\s+$', sentence_buffer):
                 clean_chunk = sanitize_tars_text(sentence_buffer)
                 if clean_chunk:
-                    if speak_sentence_chunk(user_input, clean_chunk, monitor):
-                        was_interrupted = True
-                        break
+                    tts_queue.put(clean_chunk)
                 sentence_buffer = ""
-
-        if not was_interrupted and sentence_buffer.strip():
+        
+        if sentence_buffer.strip() and not was_interrupted:
             clean_chunk = sanitize_tars_text(sentence_buffer)
-            if clean_chunk: speak_sentence_chunk(user_input, clean_chunk, monitor)
-
-    except Exception:
-        pass
-
-    return full_response, was_interrupted
+            if clean_chunk: tts_queue.put(clean_chunk)
+            
+    except Exception as e:
+        print("[LLM ERROR]:", e)
+        
+    # Graceful shutdown of queues
+    tts_queue.put(None)
+    t_tts.join() 
+    play_queue.put(None)
+    t_play.join() 
+    
+    return full_response, monitor.interrupted.is_set()
 
 # =========================================================================
-# SECTION 7: MASTER EXECUTION LOOP
+# SECTION 8: MASTER EXECUTION LOOP
 # =========================================================================
 def main():
     print("==================================================")
-    print("       TARS MASTER CONTROLLER - v20.0 ONLINE      ")
+    print("       TARS MASTER CONTROLLER - v21.0 ONLINE      ")
     print("==================================================")
 
     pre_generate_audio()
@@ -605,9 +655,10 @@ def main():
                     monitor.start()
                     
                     if random.random() < 0.35:
-                        play_audio_file(HUH_SOUND_PATH)
+                        # Direct bypass to pipeline for instantaneous audio!
+                        stream_and_speak_response("Wake Up", [{'role': 'system', 'content': SYSTEM_PROMPT}, {'role': 'user', 'content': "Say 'Huh!' or 'Yes?'"}], monitor)
                     else:
-                        speak_sentence_chunk("Wake Up", random.choice(slang_wake_lines), monitor)
+                        stream_and_speak_response("Wake Up", [{'role': 'system', 'content': SYSTEM_PROMPT}, {'role': 'user', 'content': f"Say: {random.choice(slang_wake_lines)}"}], monitor)
                         
                     monitor.stop()
                     
@@ -636,7 +687,7 @@ def main():
 
                 monitor = AcousticBargeInMonitor(trigger_threshold)
                 monitor.start()
-                speak_sentence_chunk(user_cmd, reply_text, monitor)
+                stream_and_speak_response(user_cmd, [{'role': 'system', 'content': SYSTEM_PROMPT}, {'role': 'user', 'content': f"Say: {reply_text}"}], monitor)
                 monitor.stop()
                 followup_active = True
                 continue
@@ -646,18 +697,13 @@ def main():
                 wifi_link.send(seq_payload)
                 monitor = AcousticBargeInMonitor(trigger_threshold)
                 monitor.start()
-                speak_sentence_chunk(user_cmd, f"Executing sequence: {seq_verbal}.", monitor)
+                stream_and_speak_response(user_cmd, [{'role': 'system', 'content': SYSTEM_PROMPT}, {'role': 'user', 'content': f"Say: Executing sequence: {seq_verbal}."}], monitor)
                 monitor.stop()
                 followup_active = True
                 continue
 
-            executed, reply_text = handle_quick_commands(user_cmd)
-            if executed:
-                monitor = AcousticBargeInMonitor(trigger_threshold)
-                monitor.start()
-                speak_sentence_chunk(user_cmd, reply_text, monitor)
-                monitor.stop()
-                followup_active = True 
+            if handle_quick_commands(user_cmd, AcousticBargeInMonitor(trigger_threshold), chat_messages):
+                followup_active = True
                 continue
 
             # LLM Conversation Flow (Zero Latency)
