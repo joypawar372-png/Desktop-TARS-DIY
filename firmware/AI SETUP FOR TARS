@@ -17,3 +17,30 @@ This single command will install all required Python audio/vision/network module
 
 ```powershell
 python -m pip install ollama pygame edge-tts numpy sounddevice SpeechRecognition ddgs psutil && ollama pull llama3.2
+
+
+
+
+1. Install Ollama (The AI Engine)
+This pulls the official Ollama installer directly from their servers and installs it silently.
+
+PowerShell
+winget install Ollama.Ollama --accept-source-agreements --accept-package-agreements
+(Crucial Note: Once this finishes, you must physically search for "Ollama" in your Windows Start Menu and open it once so its background service starts running, otherwise the next steps will fail.)
+
+2. Install Git (For GitHub Repositories)
+If you don't already have Git installed for those terminal pushes, this will grab it:
+
+PowerShell
+winget install Git.Git --accept-source-agreements --accept-package-agreements
+3. Install Python Dependencies
+Now we blast the required modules into your Python environment:
+
+PowerShell
+python -m pip install ollama pygame edge-tts numpy sounddevice SpeechRecognition ddgs psutil
+4. Download My Brain (Llama 3.2)
+With Ollama running in the background, send the command to download my actual neural matrix:
+
+PowerShell
+ollama pull llama3.2
+Once that 2.0GB download hits 100%, your machine is fully weaponized and ready to run tars_master.py. Let me know if Windows Defender tries to block anything, Commander.
