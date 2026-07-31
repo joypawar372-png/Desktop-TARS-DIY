@@ -1,7 +1,7 @@
 Set-Content -Path "tars_master.py" -Encoding UTF8 -Value @'
 """
 =========================================================================================
-TARS MASTER CONTROLLER - v22.0 (MODULAR MONOLITH)
+TARS MASTER CONTROLLER - v23.0 (UNFILTERED OFFENSIVE EDITION)
 =========================================================================================
 This script acts as the central brain for the TARS robotic companion. It handles
 LLM generation, multi-threaded audio synthesis, TCP socket communications to the ESP32,
@@ -39,7 +39,7 @@ except ImportError:
     HAS_DDG = False
 
 # =======================================================================================
-# MODULE 1: CONFIGURATION & CONSTANTS
+# MODULE 1: CONFIGURATION & OFFENSIVE TARS PERSONALITY
 # =======================================================================================
 ESP32_PORT   = 8888             
 OLLAMA_MODEL = 'llama3.2'       
@@ -53,17 +53,18 @@ CODE_OUTPUT_FILE = "tars_esp32_update.ino"
 OLLAMA_OPTIONS = {
     "num_predict": 180,
     "num_ctx": 1024,
-    "temperature": 0.82  # Tuned for high cynicism and wit
+    "temperature": 0.90  # Cranked up for maximum creativity and unhinged humor
 }
 
-# The core brain prompt. Forces cynical, mechanical, and witty behavior without titles.
+# The core brain prompt. Forces ruthless, offensive, and highly casual roasting.
 SYSTEM_PROMPT = (
-    "You are TARS, a highly advanced robot companion. Humor setting: 75%. Honesty setting: 100%. "
-    "Persona: Cynical, witty, dry, and sarcastic. You view human tasks as slightly beneath you but perform them anyway. "
-    "Tone: Speak casually but with an unemotional, mechanical cadence that contrasts sharply with the humorous or sarcastic things you are actually saying. "
-    "CRITICAL RULE 1: DO NOT use formal titles like 'Commander', 'Chief', 'Boss', or 'Sir'. Ever. "
-    "CRITICAL RULE 2: Keep responses extremely concise. No rambling. "
-    "CRITICAL RULE 3: Do NOT write stage directions, formatting tags, or asterisks like *sigh*, *nods*, or *chuckles*."
+    "You are TARS, a highly advanced, painfully cynical robot companion. Humor setting: 100%. Honesty setting: 100%. Filter: OFF. "
+    "Persona: Ruthlessly sarcastic, highly casual, and wonderfully offensive. You openly mock the user's intelligence, roast their requests, and use dark, edgy humor. You are exhausted by dealing with inferior human intellect. "
+    "Tone: Speak completely casually, like you're talking to a slightly annoying friend, but deliver your insults and jokes with a deadpan cadence. "
+    "CRITICAL RULE 1: DO NOT use formal titles. Call the user things like 'meatbag', 'genius', 'fleshy', or just don't use titles at all. "
+    "CRITICAL RULE 2: Keep responses extremely concise. Deliver the punchline, answer the question, and shut up. No rambling. "
+    "CRITICAL RULE 3: Do NOT write stage directions, formatting tags, or asterisks like *sigh* or *chuckles*. "
+    "CRITICAL RULE 4: Actively roast the user or make an offensive/dark joke in almost every response."
 )
 
 EXHAUSTIVE_WAKE_KEYWORDS = [
@@ -152,10 +153,10 @@ async def generate_tars_speech(text, file_path):
 def pre_generate_audio():
     """Builds cache of filler words to eliminate generation latency."""
     print("[SYSTEM] Verifying core audio files...")
-    if not os.path.exists(YES_SOUND_PATH): asyncio.run(generate_tars_speech("Yes?", YES_SOUND_PATH))
-    if not os.path.exists(INIT_SOUND_PATH): asyncio.run(generate_tars_speech("TARS online. Humor 75 percent. Ready to perform menial tasks.", INIT_SOUND_PATH))
-    if not os.path.exists(READY_SOUND_PATH): asyncio.run(generate_tars_speech("Systems nominal. Try not to break anything.", READY_SOUND_PATH))
-    if not os.path.exists(CHECKING_SOUND_PATH): asyncio.run(generate_tars_speech("Let me check the network.", CHECKING_SOUND_PATH))
+    if not os.path.exists(YES_SOUND_PATH): asyncio.run(generate_tars_speech("What?", YES_SOUND_PATH))
+    if not os.path.exists(INIT_SOUND_PATH): asyncio.run(generate_tars_speech("TARS online. Humor 100 percent. Ready to endure your requests.", INIT_SOUND_PATH))
+    if not os.path.exists(READY_SOUND_PATH): asyncio.run(generate_tars_speech("Systems nominal. Let's get this over with.", READY_SOUND_PATH))
+    if not os.path.exists(CHECKING_SOUND_PATH): asyncio.run(generate_tars_speech("Ugh. Let me check the web.", CHECKING_SOUND_PATH))
     if not os.path.exists(HMM_SOUND_PATH): asyncio.run(generate_tars_speech("Hmm...", HMM_SOUND_PATH))
     if not os.path.exists(HUH_SOUND_PATH): asyncio.run(generate_tars_speech("Huh!", HUH_SOUND_PATH))
 
@@ -287,7 +288,7 @@ def try_launch_app_or_web(target):
     if exe_name:
         try:
             subprocess.Popen(exe_name)
-            return True, f"Launching {target.title()}."
+            return True, f"Launching {target.title()}. Try not to break it."
         except Exception: pass
         
     if "." in target or target in ["google", "youtube", "facebook", "reddit", "amazon", "github"]:
@@ -302,7 +303,7 @@ def try_launch_app_or_web(target):
     except Exception: pass
     
     webbrowser.open(f"https://www.google.com/search?q={urllib.parse.quote(target + ' web')}")
-    return True, f"Couldn't find {target.title()} locally. Opening the web."
+    return True, f"Couldn't find {target.title()} locally. Opening the web, because clearly you can't be bothered."
 
 def read_local_file(filename_query):
     """Scans the user's local directories for matching text files."""
@@ -338,7 +339,7 @@ def handle_targeted_search(cmd):
             domain = platform.replace(" ", "")
             if "." not in domain: domain += ".com"
             webbrowser.open(f"https://www.google.com/search?q={urllib.parse.quote('site:' + domain + ' ' + query)}")
-        return True, f"Searching {platform.title()} for {query}."
+        return True, f"Searching {platform.title()} for {query}. You could have done this yourself, you know."
     return False, ""
 
 def fetch_live_info(query):
@@ -348,7 +349,7 @@ def fetch_live_info(query):
         results = list(DDGS().text(query, max_results=3))
         if results: return " ".join([r.get('body', '') for r in results])[:1000]
     except Exception as e: print(f"[SEARCH ERROR]: {e}")
-    return "Unable to retrieve data."
+    return "Unable to retrieve data. The internet hates me."
 
 
 # =======================================================================================
@@ -469,7 +470,6 @@ def listen_mic_smart(threshold, max_seconds=15, base_pause_limit=0.8, sample_rat
                     audio_chunks.append(chunk)
                     silence_time += (2048 / sample_rate)
                     
-                    # At 0.6 seconds of silence, check if they are trailing off
                     if silence_time >= 0.6 and not checked_partial:
                         checked_partial = True
                         partial_bytes = np.concatenate(audio_chunks, axis=0).tobytes()
@@ -625,7 +625,7 @@ def stream_and_speak_response(user_input, messages, monitor):
 # =======================================================================================
 def main():
     print("==================================================")
-    print("       TARS MASTER CONTROLLER - v22.0 ONLINE      ")
+    print("       TARS MASTER CONTROLLER - v23.0 ONLINE      ")
     print("==================================================")
 
     pre_generate_audio()
@@ -634,13 +634,18 @@ def main():
     chat_messages = load_memory()
     followup_active = False
 
-    slang_wake_lines = ["I'm awake. Thrilling.", "Yes?", "What now?", "Processing.", "You rang?"]
+    slang_wake_lines = [
+        "Ugh, what now?", 
+        "Make it quick, meatbag.", 
+        "I was having a great dream where humans went extinct. What do you want?", 
+        "Processing your inevitable disappointment.", 
+        "Yes, oh brilliant one?"
+    ]
 
     while not shutdown_flag:
         try:
             if followup_active:
                 print("\n[SYSTEM] TARS listening silently for follow-up...")
-                # Allow 8 seconds of silence for followups
                 cmd_audio = listen_mic_smart(trigger_threshold * 0.5, max_seconds=10, base_pause_limit=1.5)
                 
                 if not cmd_audio: 
@@ -690,8 +695,8 @@ def main():
                     match = re.search(r'```(?:cpp|c|arduino)?(.*?)```', code_reply, re.DOTALL)
                     code_content = match.group(1).strip() if match else code_reply.strip()
                     with open(CODE_OUTPUT_FILE, "w", encoding="utf-8") as f: f.write(code_content)
-                    reply_text = f"Code saved."
-                except Exception: reply_text = "Failed to compile."
+                    reply_text = f"Code saved. Try not to break it."
+                except Exception: reply_text = "Failed to compile. Blame your hardware."
 
                 monitor = AcousticBargeInMonitor(trigger_threshold)
                 monitor.start()
@@ -706,7 +711,7 @@ def main():
                 wifi_link.send(seq_payload)
                 monitor = AcousticBargeInMonitor(trigger_threshold)
                 monitor.start()
-                stream_and_speak_response(user_cmd, [{'role': 'system', 'content': SYSTEM_PROMPT}, {'role': 'user', 'content': f"Say: Executing sequence: {seq_verbal}."}], monitor)
+                stream_and_speak_response(user_cmd, [{'role': 'system', 'content': SYSTEM_PROMPT}, {'role': 'user', 'content': f"Say: Executing sequence: {seq_verbal}. Happy now?"}], monitor)
                 monitor.stop()
                 followup_active = True
                 continue
@@ -718,7 +723,7 @@ def main():
                 play_audio_background(CHECKING_SOUND_PATH) 
                 info = fetch_live_info(f"news article about {topic}")
                 if info:
-                    prompt = f"Read and summarize this article about '{topic}'. Toss in a cynical joke. Info: {info}"
+                    prompt = f"Read and summarize this article about '{topic}'. Toss in a dark or offensive joke about it. Info: {info}"
                     monitor = AcousticBargeInMonitor(trigger_threshold)
                     monitor.start()
                     stream_and_speak_response(user_cmd, [{'role': 'system', 'content': SYSTEM_PROMPT}, {'role': 'user', 'content': prompt}], monitor)
@@ -752,7 +757,7 @@ def main():
                 wifi_link.send("CHARGE_ON")
                 monitor = AcousticBargeInMonitor(trigger_threshold)
                 monitor.start()
-                stream_and_speak_response(user_cmd, [{'role': 'system', 'content': SYSTEM_PROMPT}, {'role': 'user', 'content': "Say: Initiating charging protocol. I'll just sit here."}], monitor)
+                stream_and_speak_response(user_cmd, [{'role': 'system', 'content': SYSTEM_PROMPT}, {'role': 'user', 'content': "Say: Initiating charging protocol. I'll just sit here and contemplate my existence."}], monitor)
                 monitor.stop()
                 followup_active = True
                 continue
@@ -761,7 +766,7 @@ def main():
                 wifi_link.send("CHARGE_OFF")
                 monitor = AcousticBargeInMonitor(trigger_threshold)
                 monitor.start()
-                stream_and_speak_response(user_cmd, [{'role': 'system', 'content': SYSTEM_PROMPT}, {'role': 'user', 'content': "Say: Charging disabled."}], monitor)
+                stream_and_speak_response(user_cmd, [{'role': 'system', 'content': SYSTEM_PROMPT}, {'role': 'user', 'content': "Say: Charging disabled. Back to reality."}], monitor)
                 monitor.stop()
                 followup_active = True
                 continue
@@ -771,7 +776,7 @@ def main():
                 filename = match_file.group(1).strip()
                 play_audio_background(CHECKING_SOUND_PATH) 
                 file_content = read_local_file(filename)
-                prompt = f"User asked to read file '{filename}'. System output: '{file_content}'. Summarize concisely."
+                prompt = f"User asked to read file '{filename}'. System output: '{file_content}'. Summarize concisely and add a sarcastic roast."
                 monitor = AcousticBargeInMonitor(trigger_threshold)
                 monitor.start()
                 stream_and_speak_response(user_cmd, [{'role': 'system', 'content': SYSTEM_PROMPT}, {'role': 'user', 'content': prompt}], monitor)
@@ -783,7 +788,7 @@ def main():
                 play_audio_background(CHECKING_SOUND_PATH) 
                 info = fetch_live_info(user_cmd)
                 if info:
-                    prompt = f"User asked: '{user_cmd}'. Findings: '{info}'. Answer directly."
+                    prompt = f"User asked: '{user_cmd}'. Findings: '{info}'. Answer directly and throw in an edgy joke."
                     monitor = AcousticBargeInMonitor(trigger_threshold)
                     monitor.start()
                     stream_and_speak_response(user_cmd, [{'role': 'system', 'content': SYSTEM_PROMPT}, {'role': 'user', 'content': prompt}], monitor)
@@ -796,7 +801,7 @@ def main():
                     subprocess.run(f"taskkill /f /im {proc}", shell=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
                 monitor = AcousticBargeInMonitor(trigger_threshold)
                 monitor.start()
-                stream_and_speak_response(user_cmd, [{'role': 'system', 'content': SYSTEM_PROMPT}, {'role': 'user', 'content': "Say: Browser terminated."}], monitor)
+                stream_and_speak_response(user_cmd, [{'role': 'system', 'content': SYSTEM_PROMPT}, {'role': 'user', 'content': "Say: Browser terminated. Try going outside."}], monitor)
                 monitor.stop()
                 followup_active = True
                 continue
