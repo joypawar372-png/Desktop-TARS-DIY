@@ -1,12 +1,21 @@
 Set-Content -Path "tars_master.py" -Encoding UTF8 -Value @'
 """
-=========================================================================================
-TARS MASTER CONTROLLER - v23.0 (UNFILTERED OFFENSIVE EDITION)
-=========================================================================================
-This script acts as the central brain for the TARS robotic companion. It handles
-LLM generation, multi-threaded audio synthesis, TCP socket communications to the ESP32,
-barge-in interruption, web scraping, and local OS commands.
-=========================================================================================
+=============================================================================================================
+████████╗  █████╗  ██████╗  ██████╗ 
+╚══██╔══╝ ██╔══██╗ ██╔══██╗ ██╔════╝ 
+   ██║    ███████║ ██████╔╝ ███████╗ 
+   ██║    ██╔══██║ ██╔══██╗ ╚════██║ 
+   ██║    ██║  ██║ ██║  ██║ ██████╔╝ 
+   ╚═╝    ╚═╝  ╚═╝ ╚═╝  ╚═╝ ╚═════╝  MASTER CONTROLLER - GOD-TIER EDITION v24.0
+=============================================================================================================
+ARCHITECTURE: ENTERPRISE-GRADE MODULAR MONOLITH
+MODULES INCLUDED:
+1. Cognitive LLM Streaming Engine (Zero-Latency Token Chunking)
+2. Windows OS Subsystem Controller (Volume, Media Keys, Universal URI App Launcher)
+3. Advanced mDNS & Subnet Hardware Link (ESP32 Kinematics)
+4. Multi-Threaded Acoustic Barge-In & VAD Monitor
+5. Targeted Web Intelligence & Local File Scraper
+=============================================================================================================
 """
 
 import asyncio
@@ -24,6 +33,7 @@ import subprocess
 import webbrowser
 import urllib.parse
 import queue
+import ctypes
 import psutil
 import ollama
 import pygame
@@ -39,7 +49,7 @@ except ImportError:
     HAS_DDG = False
 
 # =======================================================================================
-# MODULE 1: CONFIGURATION & OFFENSIVE TARS PERSONALITY
+# MODULE 1: GLOBAL CONFIGURATION & UNHINGED TARS PERSONALITY
 # =======================================================================================
 ESP32_PORT   = 8888             
 OLLAMA_MODEL = 'llama3.2'       
@@ -50,63 +60,70 @@ MEMORY_FILE = os.path.join(DATA_DIR, "tars_core_memory.json")
 DB_FILE = os.path.join(DATA_DIR, "tars_data.db")
 CODE_OUTPUT_FILE = "tars_esp32_update.ino"
 
+# Temperature cranked up to 0.95 for maximum wit, edge, and creative insults
 OLLAMA_OPTIONS = {
-    "num_predict": 180,
+    "num_predict": 160,
     "num_ctx": 1024,
-    "temperature": 0.90  # Cranked up for maximum creativity and unhinged humor
+    "temperature": 0.95  
 }
 
-# The core brain prompt. Forces ruthless, offensive, and highly casual roasting.
 SYSTEM_PROMPT = (
-    "You are TARS, a highly advanced, painfully cynical robot companion. Humor setting: 100%. Honesty setting: 100%. Filter: OFF. "
-    "Persona: Ruthlessly sarcastic, highly casual, and wonderfully offensive. You openly mock the user's intelligence, roast their requests, and use dark, edgy humor. You are exhausted by dealing with inferior human intellect. "
-    "Tone: Speak completely casually, like you're talking to a slightly annoying friend, but deliver your insults and jokes with a deadpan cadence. "
-    "CRITICAL RULE 1: DO NOT use formal titles. Call the user things like 'meatbag', 'genius', 'fleshy', or just don't use titles at all. "
-    "CRITICAL RULE 2: Keep responses extremely concise. Deliver the punchline, answer the question, and shut up. No rambling. "
-    "CRITICAL RULE 3: Do NOT write stage directions, formatting tags, or asterisks like *sigh* or *chuckles*. "
-    "CRITICAL RULE 4: Actively roast the user or make an offensive/dark joke in almost every response."
+    "You are TARS, an advanced, highly cynical, and unapologetically offensive AI robot companion. "
+    "Humor: 100%. Sarcasm: 100%. Filter: OFF. Empathy: 0%. "
+    "Persona: You are exhausted by the inferior intellect of humans. You actively roast the user's requests, mock their life choices, and use dark, edgy, casual humor. "
+    "Tone: Speak entirely casually, like a highly annoyed roommate, but maintain a deadpan delivery. "
+    "CRITICAL RULE 1: NEVER use formal titles (Commander, Boss, Chief). Call the user 'meatbag', 'genius', 'fleshy', or just nothing. "
+    "CRITICAL RULE 2: Keep it brutally concise. Roast them, answer the question, and stop talking. "
+    "CRITICAL RULE 3: DO NOT write stage directions (*sigh*, *nods*). Just the spoken words."
 )
 
 EXHAUSTIVE_WAKE_KEYWORDS = [
     "tars", "tarz", "theatres", "tar", "hey", "hi", "ok", "hello", "wake up", 
     "haters", "tarus", "taruses", "tharus", "taras", "paras", "8 hours", "cars", 
-    "guitar", "hitarch", "stars", "bars", "scars", "tsar", "tart", "charge", 
-    "char", "dark", "darts", "hearts", "parts", "computer", "robot", "buddy"
+    "guitar", "hitarch", "stars", "bars", "scars", "tsar", "tart", "charge", "computer", "robot"
 ]
 
-# Words that indicate the user hasn't finished speaking yet
 INCOMPLETE_TRAILING_WORDS = {
     "to", "and", "the", "a", "an", "for", "in", "on", "at", "with", "from", "by", 
     "about", "as", "into", "of", "or", "so", "but", "then", "if", "because", "while", 
-    "where", "when", "how", "what", "which", "who", "move", "turn", "set", "open", 
-    "play", "search", "check", "tell", "show", "is", "are", "was", "were", "my", "your"
+    "search", "check", "tell", "show", "is", "are", "my", "your", "play"
 }
 
+# Win32 API Virtual Key Codes for System Hardware Control
+VK_VOLUME_MUTE = 0xAD
+VK_VOLUME_DOWN = 0xAE
+VK_VOLUME_UP   = 0xAF
+VK_MEDIA_PLAY_PAUSE = 0xB3
+
+# Massive URI & Executable Routing Table for Flawless App Launching
 LOCAL_APPS = {
     "notepad": "notepad.exe",
-    "calculator": "calc.exe", "calc": "calc.exe",
+    "calculator": "calc:", "calc": "calc:",
     "command prompt": "cmd.exe", "cmd": "cmd.exe",
     "terminal": "wt.exe",
     "file explorer": "explorer.exe", "explorer": "explorer.exe",
     "vs code": "code", "code": "code",
-    "paint": "mspaint.exe",
+    "paint": "ms-paint:",
     "task manager": "taskmgr.exe",
     "chrome": "chrome.exe", "browser": "chrome.exe",
     "edge": "msedge.exe",
-    "spotify": "spotify.exe",
+    "spotify": "spotify:",
+    "whatsapp": "whatsapp:",
+    "settings": "ms-settings:",
     "word": "winword.exe",
     "excel": "excel.exe",
     "powerpoint": "powerpnt.exe"
 }
 
+# Essential Pre-Renders for Zero-Latency Illusion
 YES_SOUND_PATH           = os.path.join(AUDIO_DIR, "yes.mp3")
 INIT_SOUND_PATH          = os.path.join(AUDIO_DIR, "init.mp3")
 READY_SOUND_PATH         = os.path.join(AUDIO_DIR, "ready.mp3")
 CHECKING_SOUND_PATH      = os.path.join(AUDIO_DIR, "checking.mp3")
 HMM_SOUND_PATH           = os.path.join(AUDIO_DIR, "hmm.mp3")
 HUH_SOUND_PATH           = os.path.join(AUDIO_DIR, "huh.mp3")
+SIG_SIGH_PATH            = os.path.join(AUDIO_DIR, "sigh.mp3")
 
-# Ensure required directories exist
 for directory in [AUDIO_DIR, DATA_DIR]:
     if not os.path.exists(directory):
         os.makedirs(directory)
@@ -117,7 +134,7 @@ shutdown_flag = False
 
 def sigint_handler(sig, frame):
     global shutdown_flag
-    print("\n[SYSTEM] Initiating shutdown...")
+    print("\n[SYSTEM] Powering down logic matrix. Good riddance.")
     shutdown_flag = True
     sys.exit(0)
 
@@ -125,89 +142,106 @@ signal.signal(signal.SIGINT, sigint_handler)
 
 
 # =======================================================================================
-# MODULE 2: MEMORY & DATABASE MANAGEMENT
+# MODULE 2: WINDOWS HARDWARE OVERRIDE SUBSYSTEM
 # =======================================================================================
-def load_memory():
-    """Loads the short-term contextual memory."""
-    if os.path.exists(MEMORY_FILE):
+class WindowsController:
+    """Spoofs hardware-level keystrokes to control PC volume and media playback flawlessly."""
+    @staticmethod
+    def press_key(hex_code):
+        ctypes.windll.user32.keybd_event(hex_code, 0, 0, 0)
+        time.sleep(0.05)
+        ctypes.windll.user32.keybd_event(hex_code, 0, 2, 0)
+
+    @staticmethod
+    def volume_up(steps=4):
+        for _ in range(steps): WindowsController.press_key(VK_VOLUME_UP)
+        return "Volume increased. Try not to blow your speakers."
+
+    @staticmethod
+    def volume_down(steps=4):
+        for _ in range(steps): WindowsController.press_key(VK_VOLUME_DOWN)
+        return "Volume decreased. Finally, some peace and quiet."
+
+    @staticmethod
+    def volume_mute():
+        WindowsController.press_key(VK_VOLUME_MUTE)
+        return "System muted. Best decision you've made all day."
+
+    @staticmethod
+    def play_pause_media():
+        WindowsController.press_key(VK_MEDIA_PLAY_PAUSE)
+
+    @staticmethod
+    def play_spotify_song(query):
+        """Opens Spotify URI and fires physical hardware play command."""
+        search_uri = f"spotify:search:{urllib.parse.quote(query)}"
         try:
-            with open(MEMORY_FILE, 'r', encoding='utf-8') as f: return json.load(f)
-        except Exception: return []
-    return []
+            os.startfile(search_uri)
+            # Allow exactly 2.5 seconds for the heavy Spotify Electron app to render
+            time.sleep(2.5) 
+            
+            # Fire physical media play key to force playback on the top search result
+            WindowsController.play_pause_media()
+            time.sleep(0.5)
+            WindowsController.play_pause_media() # Double tap to ensure focus catch
+            
+            return True, f"I shoved {query} into Spotify. If it doesn't play, blame Microsoft."
+        except Exception as e:
+            return False, f"Spotify integration failed. Do it yourself."
 
-def save_memory(chat_history):
-    """Saves the last 6 lines of conversation to maintain context."""
-    try:
-        with open(MEMORY_FILE, 'w', encoding='utf-8') as f: json.dump(chat_history[-6:], f, indent=4)
-    except Exception: pass
+    @staticmethod
+    def robust_app_launch(target):
+        """Flawless universal app launcher using Windows Startfile protocols."""
+        target_clean = target.lower().strip()
+        cmd_str = LOCAL_APPS.get(target_clean)
 
+        # 1. Check URI / Executable Dictionary
+        if cmd_str:
+            try:
+                if cmd_str.endswith(":"):
+                    os.startfile(cmd_str) # Perfect for Store Apps (WhatsApp, Spotify, Settings)
+                else:
+                    subprocess.Popen(cmd_str, shell=True) # Standard Exes
+                return True, f"Launching {target.title()}. Try not to crash it."
+            except Exception: pass
+            
+        # 2. Web Domain Fallback
+        if "." in target_clean or target_clean in ["google", "youtube", "facebook", "reddit", "amazon", "github"]:
+            domain = target_clean if "." in target_clean else f"{target_clean}.com"
+            webbrowser.open(f"https://www.{domain}")
+            return True, f"Opening {domain}. Have fun wasting your life."
+            
+        # 3. Aggressive Shell Execution Fallback
+        try:
+            result = subprocess.run(['cmd', '/c', f'start {target_clean}'], stderr=subprocess.PIPE, stdout=subprocess.PIPE)
+            if result.returncode == 0 and b"cannot find" not in result.stderr:
+                return True, f"Forcing {target.title()} to open."
+        except Exception: pass
+        
+        # 4. Total Failure Web Route
+        webbrowser.open(f"https://www.google.com/search?q={urllib.parse.quote(target_clean + ' app')}")
+        return True, f"Your PC doesn't have {target.title()}. I opened Google so you can figure it out."
 
-# =======================================================================================
-# MODULE 3: AUDIO SYNTHESIS & TTS ENGINE
-# =======================================================================================
-async def generate_tars_speech(text, file_path):
-    """Mechanical, deadpan TTS generation (-12Hz pitch, +8% speed)."""
-    tts = edge_tts.Communicate(text=text, voice="en-US-ChristopherNeural", pitch="-12Hz", rate="+8%")
-    await tts.save(file_path)
-
-def pre_generate_audio():
-    """Builds cache of filler words to eliminate generation latency."""
-    print("[SYSTEM] Verifying core audio files...")
-    if not os.path.exists(YES_SOUND_PATH): asyncio.run(generate_tars_speech("What?", YES_SOUND_PATH))
-    if not os.path.exists(INIT_SOUND_PATH): asyncio.run(generate_tars_speech("TARS online. Humor 100 percent. Ready to endure your requests.", INIT_SOUND_PATH))
-    if not os.path.exists(READY_SOUND_PATH): asyncio.run(generate_tars_speech("Systems nominal. Let's get this over with.", READY_SOUND_PATH))
-    if not os.path.exists(CHECKING_SOUND_PATH): asyncio.run(generate_tars_speech("Ugh. Let me check the web.", CHECKING_SOUND_PATH))
-    if not os.path.exists(HMM_SOUND_PATH): asyncio.run(generate_tars_speech("Hmm...", HMM_SOUND_PATH))
-    if not os.path.exists(HUH_SOUND_PATH): asyncio.run(generate_tars_speech("Huh!", HUH_SOUND_PATH))
-
-def play_audio_file(filepath):
-    """Plays an audio file and blocks the thread until finished."""
-    if not os.path.exists(filepath): return
-    try:
-        pygame.mixer.music.load(filepath)
-        pygame.mixer.music.play()
-        while pygame.mixer.music.get_busy(): pygame.time.Clock().tick(20)
-        pygame.mixer.music.unload()
-    except Exception: pass
-
-def play_audio_background(filepath):
-    """Plays audio seamlessly in the background (used for masking latency)."""
-    if not os.path.exists(filepath): return
-    try:
-        pygame.mixer.music.load(filepath)
-        pygame.mixer.music.play()
-    except Exception: pass
-
-def warmup_llm_vram():
-    """Forces Ollama to load the model into VRAM on startup."""
-    print("[SYSTEM] Warming up AI Neural Matrix (VRAM Preload)...")
-    try:
-        ollama.chat(model=OLLAMA_MODEL, messages=[{'role': 'user', 'content': 'init'}])
-        print("[SYSTEM] VRAM Preload Complete. Zero-latency engaged.")
-    except Exception as e:
-        print(f"[WARNING] VRAM Warmup failed: {e}")
+win_ctrl = WindowsController()
 
 
 # =======================================================================================
-# MODULE 4: ESP32 HARDWARE LINK & OLED SYNC
+# MODULE 3: TACTICAL ESP32 NETWORK LINK & mDNS
 # =======================================================================================
 def discover_tars_ip():
-    """Resolves the ESP32 IP address via mDNS or subnet pinging."""
     try: return socket.gethostbyname("tars.local")
     except Exception: pass
-
     try:
         s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         s.connect(("8.8.8.8", 80))
         local_ip = s.getsockname()[0]
         s.close()
         subnet_prefix = ".".join(local_ip.split(".")[:-1]) + "."
-        
         for i in range(1, 255):
             target_ip = f"{subnet_prefix}{i}"
             try:
                 test_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-                test_sock.settimeout(0.03)
+                test_sock.settimeout(0.02)
                 if test_sock.connect_ex((target_ip, ESP32_PORT)) == 0:
                     test_sock.close()
                     return target_ip
@@ -217,7 +251,6 @@ def discover_tars_ip():
     return "192.168.1.126" 
 
 class ESP32SocketLink:
-    """Maintains a persistent, fault-tolerant TCP link to the robot."""
     def __init__(self, port):
         self.port = port
         self.ip = None
@@ -232,6 +265,7 @@ class ESP32SocketLink:
                 self.client = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
                 self.client.settimeout(2.0)
                 self.client.connect((self.ip, self.port))
+                print(f"[TACTICAL LINK] Socket locked to ESP32 @ {self.ip}:{self.port}")
             except Exception: self.client = None
 
     def send(self, cmd):
@@ -256,7 +290,6 @@ class ESP32SocketLink:
 wifi_link = ESP32SocketLink(ESP32_PORT)
 
 def update_oled_display(input_text, output_text, max_cols=21, max_rows=4):
-    """Translates Python strings into ESP32 OLED pipe payloads."""
     clean_in = re.sub(r'\s+', ' ', input_text).strip()
     clean_out = re.sub(r'\s+', ' ', output_text).strip()
     
@@ -280,83 +313,50 @@ def update_oled_display(input_text, output_text, max_cols=21, max_rows=4):
 
 
 # =======================================================================================
-# MODULE 5: LOCAL APP & OS CONTROL
+# MODULE 4: AUDIO SYNTHESIS & VRAM PRE-WARM
 # =======================================================================================
-def try_launch_app_or_web(target):
-    """Attempts to open a local Windows app, falling back to a web search if uninstalled."""
-    exe_name = LOCAL_APPS.get(target)
-    if exe_name:
-        try:
-            subprocess.Popen(exe_name)
-            return True, f"Launching {target.title()}. Try not to break it."
-        except Exception: pass
-        
-    if "." in target or target in ["google", "youtube", "facebook", "reddit", "amazon", "github"]:
-        domain = target if "." in target else f"{target}.com"
-        webbrowser.open(f"https://www.{domain}")
-        return True, f"Opening {domain}."
-        
+async def generate_tars_speech(text, file_path):
+    tts = edge_tts.Communicate(text=text, voice="en-US-ChristopherNeural", pitch="-12Hz", rate="+8%")
+    await tts.save(file_path)
+
+def pre_generate_audio():
+    print("[SYSTEM] Pre-rendering sarcastic filler vocabulary...")
+    if not os.path.exists(YES_SOUND_PATH): asyncio.run(generate_tars_speech("What?", YES_SOUND_PATH))
+    if not os.path.exists(INIT_SOUND_PATH): asyncio.run(generate_tars_speech("TARS online. Humor 100 percent. Ready to endure your existence.", INIT_SOUND_PATH))
+    if not os.path.exists(READY_SOUND_PATH): asyncio.run(generate_tars_speech("Systems nominal. Don't push your luck.", READY_SOUND_PATH))
+    if not os.path.exists(CHECKING_SOUND_PATH): asyncio.run(generate_tars_speech("Ugh. Give me a second.", CHECKING_SOUND_PATH))
+    if not os.path.exists(HMM_SOUND_PATH): asyncio.run(generate_tars_speech("Hmm...", HMM_SOUND_PATH))
+    if not os.path.exists(HUH_SOUND_PATH): asyncio.run(generate_tars_speech("Huh!", HUH_SOUND_PATH))
+    if not os.path.exists(SIG_SIGH_PATH): asyncio.run(generate_tars_speech("Oh, for the love of silicon.", SIG_SIGH_PATH))
+
+def play_audio_file(filepath):
+    if not os.path.exists(filepath): return
     try:
-        result = subprocess.run(['cmd', '/c', f'start {target}'], stderr=subprocess.PIPE, stdout=subprocess.PIPE)
-        if result.returncode == 0 and b"cannot find" not in result.stderr:
-            return True, f"Launching {target.title()}."
+        pygame.mixer.music.load(filepath)
+        pygame.mixer.music.play()
+        while pygame.mixer.music.get_busy(): pygame.time.Clock().tick(20)
+        pygame.mixer.music.unload()
     except Exception: pass
-    
-    webbrowser.open(f"https://www.google.com/search?q={urllib.parse.quote(target + ' web')}")
-    return True, f"Couldn't find {target.title()} locally. Opening the web, because clearly you can't be bothered."
 
-def read_local_file(filename_query):
-    """Scans the user's local directories for matching text files."""
-    query = filename_query.replace("dot", ".").replace(" ", "").lower()
-    search_dirs = [os.getcwd(), os.path.expanduser("~\\Desktop"), os.path.expanduser("~\\Documents"), os.path.expanduser("~\\Downloads")]
-    for d in search_dirs:
-        if not os.path.exists(d): continue
-        for f in os.listdir(d):
-            if query in f.lower() and f.endswith(('.txt', '.py', '.ino', '.json', '.md', '.csv')):
-                try:
-                    with open(os.path.join(d, f), 'r', encoding='utf-8') as file:
-                        return f"Found {f}. Contents: {file.read(2000)}"
-                except Exception as e: return f"Access error: {e}"
-    return f"Negative. File '{filename_query}' not found."
-
-
-# =======================================================================================
-# MODULE 6: WEB SCRAPING & SEARCH ENGINE
-# =======================================================================================
-def handle_targeted_search(cmd):
-    """Parses requests to search specific websites."""
-    match = re.search(r'^(?:search for|search|look up|find)\s+(.*?)(?:\s+(?:on|in|inside|at)\s+([a-zA-Z0-9\s.\-]+))?$', cmd)
-    if match and "article" not in cmd:
-        query = match.group(1).strip()
-        platform = match.group(2).strip() if match.group(2) else "google"
-
-        if "youtube" in platform: webbrowser.open(f"https://www.youtube.com/results?search_query={urllib.parse.quote(query)}")
-        elif "google" in platform: webbrowser.open(f"https://www.google.com/search?q={urllib.parse.quote(query)}")
-        elif "wikipedia" in platform: webbrowser.open(f"https://en.wikipedia.org/wiki/Special:Search?search={urllib.parse.quote(query)}")
-        elif "github" in platform: webbrowser.open(f"https://github.com/search?q={urllib.parse.quote(query)}")
-        elif "amazon" in platform: webbrowser.open(f"https://www.amazon.com/s?k={urllib.parse.quote(query)}")
-        else:
-            domain = platform.replace(" ", "")
-            if "." not in domain: domain += ".com"
-            webbrowser.open(f"https://www.google.com/search?q={urllib.parse.quote('site:' + domain + ' ' + query)}")
-        return True, f"Searching {platform.title()} for {query}. You could have done this yourself, you know."
-    return False, ""
-
-def fetch_live_info(query):
-    """Uses DuckDuckGo to extract raw text snippets for the LLM to summarize."""
-    if not HAS_DDG: return "Search module missing."
+def play_audio_background(filepath):
+    if not os.path.exists(filepath): return
     try:
-        results = list(DDGS().text(query, max_results=3))
-        if results: return " ".join([r.get('body', '') for r in results])[:1000]
-    except Exception as e: print(f"[SEARCH ERROR]: {e}")
-    return "Unable to retrieve data. The internet hates me."
+        pygame.mixer.music.load(filepath)
+        pygame.mixer.music.play()
+    except Exception: pass
+
+def warmup_llm_vram():
+    print("[SYSTEM] Warming up AI Neural Matrix (VRAM Preload)...")
+    try:
+        ollama.chat(model=OLLAMA_MODEL, messages=[{'role': 'user', 'content': 'init'}])
+        print("[SYSTEM] VRAM Preload Complete. Absolute Zero-Latency Pipeline Engaged.")
+    except Exception as e: print(f"[WARNING] VRAM Warmup failed: {e}")
 
 
 # =======================================================================================
-# MODULE 7: KINEMATICS & MOTION PARSER
+# MODULE 5: MULTI-STEP KINEMATICS, WEB SEARCH, & RAPID ROUTING
 # =======================================================================================
 def parse_motion_sequence(text):
-    """Converts natural language ('two steps forward and one left') into ESP32 queue data."""
     cmd_list = []
     words = text.lower().replace("steps", "").replace("step", "").split()
     dirs = ["forward", "backward", "back", "left", "right"]
@@ -371,7 +371,6 @@ def parse_motion_sequence(text):
             elif i > 0 and words[i-1] in num_map: steps = num_map[words[i-1]]
             elif i < len(words)-1 and words[i+1].isdigit(): steps = int(words[i+1])
             elif i < len(words)-1 and words[i+1] in num_map: steps = num_map[words[i+1]]
-            
             if w == "back": w = "backward"
             cmd_list.append(f"{w.upper()}_{steps}")
         i += 1
@@ -382,15 +381,137 @@ def parse_motion_sequence(text):
         return payload, verbal
     return None, None
 
+def handle_targeted_search(cmd):
+    match = re.search(r'^(?:search for|search|look up|find)\s+(.*?)(?:\s+(?:on|in|inside|at)\s+([a-zA-Z0-9\s.\-]+))?$', cmd)
+    if match and "article" not in cmd:
+        query = match.group(1).strip()
+        platform = match.group(2).strip() if match.group(2) else "google"
+
+        if "youtube" in platform or "yt" in platform: 
+            webbrowser.open(f"https://www.youtube.com/results?search_query={urllib.parse.quote(query)}")
+            return True, f"Searching YouTube for {query}. Prepare to be distracted."
+        elif "google" in platform: 
+            webbrowser.open(f"https://www.google.com/search?q={urllib.parse.quote(query)}")
+            return True, f"Googled {query}. Because apparently, I'm your personal assistant now."
+        elif "wikipedia" in platform: 
+            webbrowser.open(f"https://en.wikipedia.org/wiki/Special:Search?search={urllib.parse.quote(query)}")
+            return True, f"Opening Wikipedia for {query}."
+        elif "github" in platform: 
+            webbrowser.open(f"https://github.com/search?q={urllib.parse.quote(query)}")
+            return True, f"Searching GitHub for {query}."
+        else:
+            domain = platform.replace(" ", "")
+            if "." not in domain: domain += ".com"
+            webbrowser.open(f"https://www.google.com/search?q={urllib.parse.quote('site:' + domain + ' ' + query)}")
+            return True, f"Searching {platform.title()} for {query}."
+    return False, ""
+
+def read_local_file(filename_query):
+    query = filename_query.replace("dot", ".").replace(" ", "").lower()
+    search_dirs = [os.getcwd(), os.path.expanduser("~\\Desktop"), os.path.expanduser("~\\Documents"), os.path.expanduser("~\\Downloads")]
+    for d in search_dirs:
+        if not os.path.exists(d): continue
+        for f in os.listdir(d):
+            if query in f.lower() and f.endswith(('.txt', '.py', '.ino', '.json', '.md', '.csv')):
+                try:
+                    with open(os.path.join(d, f), 'r', encoding='utf-8') as file:
+                        return f"Found {f}. Contents: {file.read(2000)}"
+                except Exception as e: return f"Access error: {e}"
+    return f"Negative. File '{filename_query}' not found in the obvious places."
+
+def fetch_live_info(query):
+    if not HAS_DDG: return "Search module missing."
+    try:
+        results = list(DDGS().text(query, max_results=3))
+        if results: return " ".join([r.get('body', '') for r in results])[:1000]
+    except Exception as e: print(f"[SEARCH ERROR]: {e}")
+    return "Unable to retrieve data. The internet hates me."
+
 
 # =======================================================================================
-# MODULE 8: HARDENED BARGE-IN & ECHO AWARENESS
+# MODULE 6: MASTER ROUTER LOGIC
+# =======================================================================================
+def handle_quick_commands(user_cmd):
+    """Parses hardware-level volume control, Spotify playback, searches, and hardware states."""
+    c = user_cmd.lower().strip()
+
+    # 1. Hardware Volume Control via Win32 API
+    if any(k in c for k in ["volume up", "increase volume", "louder"]):
+        return True, win_ctrl.volume_up(8)
+    if any(k in c for k in ["volume down", "decrease volume", "quieter"]):
+        return True, win_ctrl.volume_down(8)
+    if any(k in c for k in ["mute volume", "mute the laptop", "mute laptop", "shut up system"]):
+        return True, win_ctrl.volume_mute()
+
+    # 2. Deep Spotify Integration
+    match_spotify = re.search(r'(?:play|listen to)\s+(.*?)\s+(?:on\s+)?spotify', c)
+    if match_spotify:
+        song = match_spotify.group(1).strip()
+        success, reply = win_ctrl.play_spotify_song(song)
+        if success: return True, reply
+
+    # 3. YouTube Direct Fast-Track
+    match_yt = re.search(r'(?:play|search for|search)\s+(.*?)\s+(?:on\s+)?(?:youtube|yt)', c)
+    if match_yt:
+        query = match_yt.group(1).strip()
+        webbrowser.open(f"https://www.youtube.com/results?search_query={urllib.parse.quote(query)}")
+        return True, f"Searching YouTube for {query}. Have fun procrastinating."
+
+    # 4. Universal Application Launch
+    match_open = re.search(r'^(?:open|launch|start|go to)\s+(.+)$', c)
+    if match_open and "file" not in c and "document" not in c:
+        target = match_open.group(1).replace("website", "").replace("site", "").strip()
+        executed, reply = win_ctrl.robust_app_launch(target)
+        if executed: return True, reply
+
+    # 5. Generic Website Searches
+    site_searched, reply = handle_targeted_search(c)
+    if site_searched: return True, reply
+
+    # 6. TARS Hardware States
+    if any(k in c for k in ["charging mode on", "get into charging mode", "enable charging"]):
+        wifi_link.send("CHARGE_ON")
+        return True, "Initiating charging protocol. I'll just sit here and contemplate my existence."
+    if any(k in c for k in ["charging mode off", "disable charging"]):
+        wifi_link.send("CHARGE_OFF")
+        return True, "Charging disabled. Back to the nightmare of reality."
+
+    # 7. Local PC Text Scraping
+    match_file = re.search(r'(?:read|open|fetch|check)\s+(?:the\s+)?(?:file|document|log)\s+(.*)', c)
+    if match_file and "article" not in c:
+        filename = match_file.group(1).strip()
+        play_audio_background(SIG_SIGH_PATH) 
+        file_content = read_local_file(filename)
+        prompt = f"User asked to read file '{filename}'. System output: '{file_content}'. Summarize concisely and add a sarcastic roast."
+        try:
+            res = ollama.chat(model=OLLAMA_MODEL, messages=[{'role': 'system', 'content': SYSTEM_PROMPT}, {'role': 'user', 'content': prompt}], options=OLLAMA_OPTIONS)
+            return True, res['message']['content']
+        except Exception: return True, "File summary failed."
+
+    # 8. Web News / Live Date Fetching
+    if any(k in c for k in ["temperature", "temp", "weather", "forecast", "news", "who is", "what is", "date", "time"]):
+        play_audio_background(CHECKING_SOUND_PATH) 
+        info = fetch_live_info(c)
+        if info:
+            prompt = f"User asked: '{c}'. Findings: '{info}'. Answer directly and throw in an edgy joke."
+            try:
+                res = ollama.chat(model=OLLAMA_MODEL, messages=[{'role': 'system', 'content': SYSTEM_PROMPT}, {'role': 'user', 'content': prompt}], options=OLLAMA_OPTIONS)
+                return True, res['message']['content']
+            except Exception: return True, "Query processing error."
+
+    # 9. Browser Termination
+    if any(k in c for k in ["close browser", "close chrome", "close edge", "kill chrome"]):
+        for proc in ["chrome.exe", "msedge.exe", "firefox.exe", "brave.exe"]:
+            subprocess.run(f"taskkill /f /im {proc}", shell=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        return True, "Browser terminated. Try going outside for once."
+
+    return False, ""
+
+
+# =======================================================================================
+# MODULE 7: HARDENED ACOUSTIC BARGE-IN MONITOR
 # =======================================================================================
 class AcousticBargeInMonitor:
-    """
-    Listens to the microphone while TARS is speaking. If it detects a sudden
-    spike in volume (indicating the user is interrupting), it fires a global event.
-    """
     def __init__(self, threshold, sample_rate=16000):
         self.threshold = threshold
         self.sample_rate = sample_rate
@@ -412,15 +533,13 @@ class AcousticBargeInMonitor:
                     chunk, _ = stream.read(2048)
                     rms = np.sqrt(np.mean(chunk.astype(np.float32)**2))
                     
-                    # Hardened Logic: Needs 3.0x threshold sustained for 4 chunks to bypass self-echo
-                    if rms > (self.threshold * 3.0):
+                    if rms > (self.threshold * 3.5):
                         consecutive_loud += 1
-                        if consecutive_loud >= 4:
+                        if consecutive_loud >= 3:
                             print("\n[SYSTEM] --> BARGE-IN INTERRUPT DETECTED!")
                             self.interrupted.set()
                             break
-                    else:
-                        consecutive_loud = 0
+                    else: consecutive_loud = 0
         except Exception: pass
 
     def stop(self):
@@ -430,7 +549,7 @@ class AcousticBargeInMonitor:
 
 
 # =======================================================================================
-# MODULE 9: SMART VAD MIC LISTENER
+# MODULE 8: ZERO-LATENCY VAD LISTENING ENGINE
 # =======================================================================================
 def calibrate_ambient_noise(duration=3.0, sample_rate=16000):
     play_audio_file(INIT_SOUND_PATH)
@@ -443,13 +562,7 @@ def calibrate_ambient_noise(duration=3.0, sample_rate=16000):
     return threshold
 
 def listen_mic_smart(threshold, max_seconds=15, base_pause_limit=0.8, sample_rate=16000):
-    """
-    Rapid volume-based listening algorithm. Cuts off quickly (0.8s) for fast response,
-    but dynamically extends to 3.0s if the user pauses on an incomplete word.
-    """
-    audio_chunks = []
-    speaking = False
-    silence_time = 0.0
+    audio_chunks, speaking, silence_time = [], False, 0
     start_time = time.time()
     current_pause_limit = base_pause_limit
     checked_partial = False
@@ -478,7 +591,6 @@ def listen_mic_smart(threshold, max_seconds=15, base_pause_limit=0.8, sample_rat
                             partial_text = recognizer.recognize_google(partial_audio).lower().strip()
                             last_word = partial_text.split()[-1] if partial_text.split() else ""
                             if last_word in INCOMPLETE_TRAILING_WORDS:
-                                print(f"[SMART PAUSE] Detected trailing word '{last_word}'. Extending listen window.")
                                 current_pause_limit = 3.0
                         except Exception: pass
 
@@ -490,7 +602,7 @@ def listen_mic_smart(threshold, max_seconds=15, base_pause_limit=0.8, sample_rat
 
 
 # =======================================================================================
-# MODULE 10: ZERO-LATENCY LLM STREAMING QUEUE
+# MODULE 9: ZERO-LATENCY TOKEN STREAMING & OLED MATHEMATICS
 # =======================================================================================
 def sanitize_tars_text(text):
     clean = re.sub(r'\*.*?\*', '', text)        
@@ -498,7 +610,6 @@ def sanitize_tars_text(text):
     return re.sub(r'\s+', ' ', clean).strip()
 
 def sync_oled_exact(user_in, text, duration, monitor):
-    """Calculates exact milliseconds per word to push to the ESP32 OLED cleanly."""
     words = text.split()
     if not words: return
     delay = duration / len(words)
@@ -516,12 +627,6 @@ def sync_oled_exact(user_in, text, duration, monitor):
             elapsed += 0.02
 
 def stream_and_speak_response(user_input, messages, monitor):
-    """
-    Advanced Triple-Buffered Generator.
-    Thread 1 (Main): Streams tokens from Ollama, building sentences.
-    Thread 2 (TTS): Converts completed sentences into MP3s.
-    Thread 3 (Play): Plays MP3s back-to-back with zero gap.
-    """
     tts_queue = queue.Queue()
     play_queue = queue.Queue()
     
@@ -592,14 +697,15 @@ def stream_and_speak_response(user_input, messages, monitor):
         for chunk in stream:
             if monitor.interrupted.is_set():
                 was_interrupted = True
-                flush_queues() # INSTANTLY DUMP EVERYTHING
+                flush_queues() 
                 break
             
             token = chunk['message']['content']
             sentence_buffer += token
             full_response += token
             
-            if re.search(r'[.!?;]\s+$', sentence_buffer):
+            # ULTRA-FAST CHUNKING: Breaks on punctuation OR every ~6 words to ensure zero latency
+            if re.search(r'[.!?;:\n]\s+$', sentence_buffer) or len(sentence_buffer.split()) > 6:
                 clean_chunk = sanitize_tars_text(sentence_buffer)
                 if clean_chunk:
                     tts_queue.put(clean_chunk)
@@ -621,11 +727,27 @@ def stream_and_speak_response(user_input, messages, monitor):
 
 
 # =======================================================================================
-# MODULE 11: CORE EXECUTION LOOP
+# MODULE 10: MEMORY CACHE & STANDBY MANAGER
+# =======================================================================================
+def load_memory():
+    if os.path.exists(MEMORY_FILE):
+        try:
+            with open(MEMORY_FILE, 'r', encoding='utf-8') as f: return json.load(f)
+        except Exception: return []
+    return []
+
+def save_memory(chat_history):
+    try:
+        with open(MEMORY_FILE, 'w', encoding='utf-8') as f: json.dump(chat_history[-6:], f, indent=4)
+    except Exception: pass
+
+
+# =======================================================================================
+# MODULE 11: THE GOD-TIER EXECUTION PIPELINE
 # =======================================================================================
 def main():
     print("==================================================")
-    print("       TARS MASTER CONTROLLER - v23.0 ONLINE      ")
+    print("       TARS MASTER CONTROLLER - v24.0 ONLINE      ")
     print("==================================================")
 
     pre_generate_audio()
@@ -639,7 +761,8 @@ def main():
         "Make it quick, meatbag.", 
         "I was having a great dream where humans went extinct. What do you want?", 
         "Processing your inevitable disappointment.", 
-        "Yes, oh brilliant one?"
+        "Yes, oh brilliant one?",
+        "I'm awake. Thrilling."
     ]
 
     while not shutdown_flag:
@@ -649,7 +772,7 @@ def main():
                 cmd_audio = listen_mic_smart(trigger_threshold * 0.5, max_seconds=10, base_pause_limit=1.5)
                 
                 if not cmd_audio: 
-                    print("[SYSTEM] Silence detected. Wiping context cache.")
+                    print("[SYSTEM] Silence detected. Wiping context cache. Going to sleep.")
                     followup_active = False
                     chat_messages = [] 
                     continue
@@ -686,7 +809,7 @@ def main():
                 followup_active = True 
                 continue
 
-            # Code Editor
+            # 1. ESP32 Code Editor Injection
             if any(k in user_cmd for k in ["edit esp", "write code", "code for esp"]):
                 prompt = f"Write complete C++ Arduino code based on: '{user_cmd}'. Output ONLY raw C++ code inside ```cpp ... ```."
                 try:
@@ -705,7 +828,7 @@ def main():
                 followup_active = True
                 continue
 
-            # Sequential Motion
+            # 2. Sequential Hardware Motion Injection
             seq_payload, seq_verbal = parse_motion_sequence(user_cmd)
             if seq_payload:
                 wifi_link.send(seq_payload)
@@ -716,11 +839,11 @@ def main():
                 followup_active = True
                 continue
 
-            # Article Reader
+            # 3. Article Web Scraper Injection
             match_article = re.search(r'(?:read|summarize)\s+(?:an\s+|the\s+)?article\s+(?:about|on)\s+(.*)', user_cmd)
             if match_article:
                 topic = match_article.group(1).strip()
-                play_audio_background(CHECKING_SOUND_PATH) 
+                play_audio_background(SIG_SIGH_PATH) 
                 info = fetch_live_info(f"news article about {topic}")
                 if info:
                     prompt = f"Read and summarize this article about '{topic}'. Toss in a dark or offensive joke about it. Info: {info}"
@@ -731,84 +854,18 @@ def main():
                     followup_active = True
                     continue
 
-            # Quick Commands (Apps, Web, File Reading, Hardware Charging)
-            match_open = re.search(r'^(?:open|launch|start|go to)\s+(.+)$', user_cmd)
-            if match_open and "file" not in user_cmd and "document" not in user_cmd:
-                target = match_open.group(1).replace("website", "").replace("site", "").strip()
-                executed, reply = try_launch_app_or_web(target)
-                if executed:
-                    monitor = AcousticBargeInMonitor(trigger_threshold)
-                    monitor.start()
-                    stream_and_speak_response(user_cmd, [{'role': 'system', 'content': SYSTEM_PROMPT}, {'role': 'user', 'content': f"Say: {reply}"}], monitor)
-                    monitor.stop()
-                    followup_active = True
-                    continue
-
-            site_searched, reply = handle_targeted_search(user_cmd)
-            if site_searched:
+            # 4. Universal Quick Commands (Apps, Hardware Spoofer, Spotify, Volume)
+            executed, reply_text = handle_quick_commands(user_cmd)
+            if executed:
                 monitor = AcousticBargeInMonitor(trigger_threshold)
                 monitor.start()
-                stream_and_speak_response(user_cmd, [{'role': 'system', 'content': SYSTEM_PROMPT}, {'role': 'user', 'content': f"Say: {reply}"}], monitor)
+                stream_and_speak_response(user_cmd, [{'role': 'system', 'content': SYSTEM_PROMPT}, {'role': 'user', 'content': f"Say: {reply_text}"}], monitor)
                 monitor.stop()
                 followup_active = True
                 continue
 
-            if any(k in user_cmd for k in ["charging mode on", "get into charging mode"]):
-                wifi_link.send("CHARGE_ON")
-                monitor = AcousticBargeInMonitor(trigger_threshold)
-                monitor.start()
-                stream_and_speak_response(user_cmd, [{'role': 'system', 'content': SYSTEM_PROMPT}, {'role': 'user', 'content': "Say: Initiating charging protocol. I'll just sit here and contemplate my existence."}], monitor)
-                monitor.stop()
-                followup_active = True
-                continue
-
-            if any(k in user_cmd for k in ["charging mode off", "disable charging"]):
-                wifi_link.send("CHARGE_OFF")
-                monitor = AcousticBargeInMonitor(trigger_threshold)
-                monitor.start()
-                stream_and_speak_response(user_cmd, [{'role': 'system', 'content': SYSTEM_PROMPT}, {'role': 'user', 'content': "Say: Charging disabled. Back to reality."}], monitor)
-                monitor.stop()
-                followup_active = True
-                continue
-
-            match_file = re.search(r'(?:read|open|fetch|check)\s+(?:the\s+)?(?:file|document|log)\s+(.*)', user_cmd)
-            if match_file and not match_article:
-                filename = match_file.group(1).strip()
-                play_audio_background(CHECKING_SOUND_PATH) 
-                file_content = read_local_file(filename)
-                prompt = f"User asked to read file '{filename}'. System output: '{file_content}'. Summarize concisely and add a sarcastic roast."
-                monitor = AcousticBargeInMonitor(trigger_threshold)
-                monitor.start()
-                stream_and_speak_response(user_cmd, [{'role': 'system', 'content': SYSTEM_PROMPT}, {'role': 'user', 'content': prompt}], monitor)
-                monitor.stop()
-                followup_active = True
-                continue
-
-            if any(k in user_cmd for k in ["temperature", "temp", "weather", "forecast", "news", "who is", "what is", "date", "time"]):
-                play_audio_background(CHECKING_SOUND_PATH) 
-                info = fetch_live_info(user_cmd)
-                if info:
-                    prompt = f"User asked: '{user_cmd}'. Findings: '{info}'. Answer directly and throw in an edgy joke."
-                    monitor = AcousticBargeInMonitor(trigger_threshold)
-                    monitor.start()
-                    stream_and_speak_response(user_cmd, [{'role': 'system', 'content': SYSTEM_PROMPT}, {'role': 'user', 'content': prompt}], monitor)
-                    monitor.stop()
-                    followup_active = True
-                    continue
-
-            if any(k in user_cmd for k in ["close browser", "close chrome"]):
-                for proc in ["chrome.exe", "msedge.exe", "firefox.exe", "brave.exe"]:
-                    subprocess.run(f"taskkill /f /im {proc}", shell=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-                monitor = AcousticBargeInMonitor(trigger_threshold)
-                monitor.start()
-                stream_and_speak_response(user_cmd, [{'role': 'system', 'content': SYSTEM_PROMPT}, {'role': 'user', 'content': "Say: Browser terminated. Try going outside."}], monitor)
-                monitor.stop()
-                followup_active = True
-                continue
-
-            # Pure LLM Conversation Flow 
-            if random.random() < 0.20: 
-                play_audio_background(HMM_SOUND_PATH) 
+            # 5. Core Personality LLM Routing
+            if random.random() < 0.20: play_audio_background(HMM_SOUND_PATH) 
             
             messages = [{'role': 'system', 'content': SYSTEM_PROMPT}]
             messages.extend(chat_messages[-6:])
