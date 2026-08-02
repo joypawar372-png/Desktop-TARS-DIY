@@ -1,0 +1,1 @@
+🎙️ I2S Omnidirectional Mic (INMP441) WiringMic PinESP32 PinFunctionVDD3V3⚠️ CRITICAL: Do NOT use 5V. It will fry the mic.GNDGNDMain Ground Bus.L/RGNDGrounds the channel selection (sets it to Left channel).WSGPIO 15Word Select (LRCLK - Left/Right Clock).SCKGPIO 14Serial Clock (BCLK - Bit Clock).SDGPIO 32Serial Data (DIN - Data In).
