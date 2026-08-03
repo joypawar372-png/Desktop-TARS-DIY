@@ -65,6 +65,19 @@ An autonomous, voice-activated 3-legged desktop companion robot inspired by *Int
 | OLED SDA | GPIO 21 |
 | OLED SCL | GPIO 22 |
 
+Core 0 will handle your servo kinematics, OLED parsing, web server, and TCP connections.
+
+Core 1 will run two dedicated FreeRTOS tasks to stream raw 16kHz I2S audio over UDP sockets directly to the Python brain.
+
+(Note: The Python Brain now has a USE_ESP32_AUDIO = True flag at the top. If you wired an I2S Mic and I2S Amp to the ESP32, leave it True. If you just stuffed a Bluetooth speaker inside his chassis, set it to False).
+
+PART 1: The Hardware Interface (ESP32 Firmware)
+You will need an INMP441 (Microphone) and a MAX98357A (Speaker Amp). Wire them to these specific ESP32 pins:
+
+Mic: SCK to Pin 32, WS to Pin 33, SD to Pin 34, L/R to GND.
+
+Speaker: BCLK to Pin 25, LRC to Pin 26, DIN to Pin 27.
+
 ## 💻 Software Dependencies
 
 ### 1. ESP32 Body (C++)
