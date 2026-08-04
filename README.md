@@ -1,95 +1,507 @@
-# Mini AI TARS Desktop Companion 🤖
+/*
+=========================================================================================
+TARS TITAN FIRMWARE - v26.0 (HIGH-CLEARANCE ANTI-DRAG KINEMATICS)
+=========================================================================================
+*/
+#include <WiFi.h>
+#include <ESPmDNS.h>
+#include <WebServer.h>
+#include <ESP32Servo.h>
+#include <Preferences.h>
+#include <Wire.h>
+#include <Adafruit_GFX.h>
+#include <Adafruit_SSD1306.h>
+#include <driver/i2s.h>
+#include <WiFiUdp.h>
 
-An ultra-compact, conversational, 3D-printed TARS robot (inspired by *Interstellar*). This project shrinks TARS down to a desk-friendly **96 mm × 96 mm × 26 mm** cinematic square profile while utilizing a distributed "split-brain" architecture to run local LLMs and audio.
+// =========================================================================
+// 1. NETWORK & HARDWARE CONFIGURATION
+// =========================================================================
+const char* WIFI_SSID     = "YOUR_WIFI_SSID";     
+const char* WIFI_PASSWORD = "YOUR_WIFI_PASSWORD"; 
+const char* HOSTNAME      = "tars";               
 
----
+#define SERVO_LEFT_PIN  18
+#define SERVO_RIGHT_PIN 19
+#define OLED_RESET      -1
+#define SCREEN_WIDTH    128
+#define SCREEN_HEIGHT   64
+#define SCREEN_ADDRESS  0x3C
 
-## 🧠 System Architecture Overview
+// --- I2S AUDIO PINS ---
+#define I2S_MIC_BCLK  32
+#define I2S_MIC_LRC   33
+#define I2S_MIC_DOUT  34
 
-To achieve an incredibly compact footprint without sacrificing processing power, this project uses a two-part split system:
+#define I2S_SPK_BCLK  25
+#define I2S_SPK_LRC   26
+#define I2S_SPK_DIN   27
 
-1. **The Edge Client (TARS):** Powered by an **ESP32 Node32S**, TARS handles raw physical inputs/outputs—streaming voice from an I2S microphone, outputting generated audio via an I2S amplifier/speaker, and driving two SG90 servos for animated "chuckles" and gestures.
-2. **The Host Brain (Local PC):** Runs a local Python pipeline. It ingests the audio stream, processes Speech-to-Text via **Faster-Whisper**, queries a local LLM via **Ollama** using a customized TARS personality system prompt, synthesizes natural-sounding speech via **Piper TTS**, and streams the audio back to TARS over Wi-Fi.
-3. Microcontroller (1x): ESP32 or Raspberry Pi Pico (selected for compact form factor).
+Adafruit_SSD1306 display(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, OLED_RESET);
+Servo servoLeft;
+Servo servoRight;
+Preferences prefs;
+WebServer server(80);
+WiFiServer socketServer(8888); 
+WiFiClient activeClient;
 
-Micro Servos (2x): SG90 Micro Servos (for leg articulation).
+WiFiUDP udpMic;
+WiFiUDP udpSpk;
+IPAddress pythonIP;
+bool pythonIpKnown = false;
 
-LiPo Battery (1x): 3.7V Lithium-Polymer (max 35mm width to fit internal guide rails).
+// --- Servo Hardware Trims & User Presets ---
+float leftOffset        = 92.0;
+float rightOffset       = 92.0;
+bool invertLeftServo    = false;
+bool invertRightServo   = false;
 
-OLED Display (1x): 0.96" I2C OLED Module.
+// --- UPGRADED RELIABLE GAIT PARAMETERS ---
+float legSwingAngle     = 14.0;  // Wider stride
+float bodyPushAngle     = 16.0;  // Firm body push
+float clearanceLiftAngle= 8.0;   // Massive increase to lift legs off the table and prevent drag
+float swingDurationMs   = 400.0; // Snappier swing
+float pushDurationMs    = 450.0; // Steady push
+float pauseDurationMs   = 100.0; // Less dead-time between steps
+float servoSmoothFactor = 0.18;  // Faster interpolation to prevent phase-lag
 
-Charging Module (1x): USB-C Charging/Protection Module (e.g., TP4056 with USB-C input).
+// --- Modes & States ---
+bool isCharging = false;
+const float CHARGING_LEFT_LEG_ANGLE = 165.0;
 
-Fasteners (16x): M2 x 5mm Self-Tapping Screws (for mounting components to internal standoffs).
+float targetX = 0.0, targetY = 0.0;
+float currentX = 0.0, currentY = 0.0;
 
-Wiring (1x Set): Flexible silicone-insulated jumper wires (26-30 AWG recommended).
+#define MAX_QUEUE 15
+String cmdQueueDir[MAX_QUEUE];
+int cmdQueueSteps[MAX_QUEUE];
+int qHead = 0, qTail = 0;
 
----
-<img width="416" height="555" alt="images" src="https://github.com/user-attachments/assets/f3e853f6-c21b-484c-a28f-8f6542b22210" />
+bool aiStepsActive = false;
+int aiStepsRemaining = 0;
+float aiTargetX = 0.0, aiTargetY = 0.0;
 
+bool isWakeShaking = false;
+unsigned long wakeShakeStartTime = 0;
 
-+────────────────────────+────────────────────────+────────────────────────+
+String oledLines[4] = {"", "", "", ""};
+unsigned long aiDisplayTimeout = 0;
 
+float currentLeftAngle  = 92.0;
+float currentRightAngle = 92.0;
 
-# TARS AI Desktop Companion 🤖
+enum GaitPhase { PHASE_IDLE, PHASE_LIFT_AND_SWING, PHASE_PLANT, PHASE_PUSH_BODY, PHASE_RECOVER };
+GaitPhase currentPhase = PHASE_IDLE;
+unsigned long phaseStartTime = 0;
 
-[![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
-[![Arduino IDE](https://img.shields.io/badge/Arduino_IDE-C++-00979D?logo=arduino)](https://www.arduino.cc/)
-[![Ollama](https://img.shields.io/badge/AI-Ollama_Llama_3.2-black)](https://ollama.ai/)
-[![YouTube](https://img.shields.io/badge/YouTube-BRAVO__X1-red?logo=youtube)](https://www.youtube.com/)
+unsigned long lastEyeFrame = 0;
+unsigned long nextBlinkTime = 0;
+bool isBlinking = false;
+unsigned long blinkStartTime = 0;
+float currentGazeX = 0.0, currentGazeY = 0.0;
+float targetGazeX = 0.0, targetGazeY = 0.0;
+unsigned long nextGazeShiftTime = 0;
+float chargePulseAngle = 0.0;
 
-An autonomous, voice-activated 3-legged desktop companion robot inspired by *Interstellar*. TARS features a local Python-based AI brain powered by Ollama, synced to an ESP32 hardware body via a high-speed TCP socket. 
+// =========================================================================
+// 2. MOBILE WEB DASHBOARD
+// =========================================================================
+const char HTML_INTERFACE[] PROGMEM = R"rawliteral(
+<!DOCTYPE html>
+<html>
+<head>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>TARS Controller</title>
+    <style>
+        body { font-family: -apple-system, sans-serif; background: #121212; color: #E0E0E0; text-align: center; margin: 0; padding: 12px; }
+        h1 { font-size: 22px; letter-spacing: 3px; color: #FFF; margin-bottom: 2px; }
+        .subtitle { color: #888; font-size: 11px; margin-bottom: 12px; }
+        .card { background: #1E1E1E; border-radius: 12px; padding: 12px; margin-bottom: 12px; box-shadow: 0 4px 10px rgba(0,0,0,0.3); text-align: left; }
+        .card h3 { text-align: center; margin-top: 0; color: #007AFF; font-size: 14px; letter-spacing: 1px; }
+        #joystick-container { position: relative; width: 170px; height: 170px; background: #2A2A2A; border-radius: 50%; margin: 8px auto; touch-action: none; border: 2px solid #444; }
+        #stick { position: absolute; width: 60px; height: 60px; background: #007AFF; border-radius: 50%; top: 55px; left: 55px; box-shadow: 0 4px 8px rgba(0,0,0,0.4); }
+        .btn { background: #FF3B30; color: white; border: none; padding: 12px; font-size: 13px; border-radius: 8px; cursor: pointer; width: 100%; font-weight: bold; margin-top: 8px;}
+        .btn-charge { background: #FF9500; }
+        .btn-charge.active { background: #30D158; box-shadow: 0 0 12px rgba(48,209,88,0.6); }
+        .slider-container { margin: 10px 0; }
+        label { font-weight: bold; font-size: 11px; color: #AAA; display: block; margin-bottom: 3px; }
+        .slider { -webkit-appearance: none; width: 100%; height: 8px; border-radius: 4px; background: #333; outline: none; }
+        .slider::-webkit-slider-thumb { -webkit-appearance: none; width: 20px; height: 20px; border-radius: 50%; background: #007AFF; cursor: pointer; }
+        .slider-highlight::-webkit-slider-thumb { background: #30D158; }
+        .value-display { float: right; color: #007AFF; font-weight: bold; }
+        .checkbox-group { display: flex; align-items: center; justify-content: space-between; font-size: 11px; font-weight: bold; color: #AAA; margin-top: 10px; }
+    </style>
+</head>
+<body>
+    <h1>TARS</h1>
+    <div class="subtitle">HIGH-CLEARANCE KINEMATICS</div>
+    <div class="card" style="text-align: center;"><h3>SYSTEM MODES</h3><button id="chargeBtn" class="btn btn-charge" onclick="toggleCharging()">TOGGLE CHARGING MODE</button></div>
+    <div class="card" style="text-align: center;"><h3>JOYSTICK CONTROL</h3><div id="joystick-container"><div id="stick"></div></div><button class="btn" onclick="resetJoystick()">EMERGENCY STOP</button></div>
+    <div class="card">
+        <h3>GAIT & TIMING TUNER</h3>
+        <div class="slider-container"><label>LEG SWING STRIDE <span id="swingVal" class="value-display">14&deg;</span></label><input type="range" min="5" max="45" value="14" class="slider slider-highlight" id="swingSlider" oninput="updateConfig()"></div>
+        <div class="slider-container"><label>BODY PUSH THRUST <span id="pushVal" class="value-display">16&deg;</span></label><input type="range" min="5" max="45" value="16" class="slider slider-highlight" id="pushSlider" oninput="updateConfig()"></div>
+        <div class="slider-container"><label>CLEARANCE LIFT <span id="pitchVal" class="value-display">8&deg;</span></label><input type="range" min="0" max="30" value="8" class="slider" id="pitchSlider" oninput="updateConfig()"></div>
+        <div class="slider-container"><label>SWING DURATION <span id="swingTimeVal" class="value-display">400ms</span></label><input type="range" min="100" max="800" step="10" value="400" class="slider" id="swingTimeSlider" oninput="updateConfig()"></div>
+        <div class="slider-container"><label>PUSH DURATION <span id="pushTimeVal" class="value-display">450ms</span></label><input type="range" min="100" max="1000" step="10" value="450" class="slider" id="pushTimeSlider" oninput="updateConfig()"></div>
+        <div class="slider-container"><label>TRANSITION PAUSE <span id="pauseVal" class="value-display">100ms</span></label><input type="range" min="20" max="500" step="10" value="100" class="slider" id="pauseSlider" oninput="updateConfig()"></div>
+    </div>
+    <div class="card">
+        <h3>SERVO TRIM & INVERSION</h3>
+        <div class="slider-container"><label>LEFT LEG TRIM <span id="leftVal" class="value-display">92&deg;</span></label><input type="range" min="50" max="130" value="92" class="slider" id="leftSlider" oninput="updateConfig()"></div>
+        <div class="slider-container"><label>RIGHT LEG TRIM <span id="rightVal" class="value-display">92&deg;</span></label><input type="range" min="50" max="130" value="92" class="slider" id="rightSlider" oninput="updateConfig()"></div>
+        <div class="checkbox-group"><span>INVERT LEFT SERVO</span><input type="checkbox" id="invLeft" onchange="updateConfig()"></div>
+        <div class="checkbox-group"><span>INVERT RIGHT SERVO</span><input type="checkbox" id="invRight" onchange="updateConfig()"></div>
+        <button class="btn" style="background:#10b981; margin-top:15px;" onclick="fetch('/save').then(()=>alert('Saved to NVS!'))">SAVE TO ESP32 MEMORY</button>
+    </div>
+    <script>
+        const container = document.getElementById('joystick-container'), stick = document.getElementById('stick');
+        let active = false, lastX = 0, lastY = 0, chargingActive = false, timer;
 
-## ✨ Core Features
+        function toggleCharging() {
+            chargingActive = !chargingActive;
+            const btn = document.getElementById('chargeBtn');
+            btn.innerText = chargingActive ? "CHARGING MODE ACTIVE" : "TOGGLE CHARGING MODE";
+            btn.className = chargingActive ? "btn btn-charge active" : "btn btn-charge";
+            fetch(`/charging?state=${chargingActive ? 1 : 0}`);
+        }
+        function sendVector(x, y) { if (Math.abs(x - lastX) < 2 && Math.abs(y - lastY) < 2) return; lastX = x; lastY = y; fetch(`/vector?x=${x}&y=${y}`); }
+        function resetJoystick() { stick.style.transform = `translate(0px, 0px)`; lastX = 0; lastY = 0; fetch('/vector?x=0&y=0'); }
+        function updateConfig() {
+            let swing = document.getElementById('swingSlider').value, push = document.getElementById('pushSlider').value, pitch = document.getElementById('pitchSlider').value;
+            let stime = document.getElementById('swingTimeSlider').value, ptime = document.getElementById('pushTimeSlider').value, pause = document.getElementById('pauseSlider').value;
+            let l_off = document.getElementById('leftSlider').value, r_off = document.getElementById('rightSlider').value;
+            let inv_l = document.getElementById('invLeft').checked ? 1 : 0, inv_r = document.getElementById('invRight').checked ? 1 : 0;
+            
+            document.getElementById('swingVal').innerText = swing + '°'; document.getElementById('pushVal').innerText = push + '°'; document.getElementById('pitchVal').innerText = pitch + '°';
+            document.getElementById('swingTimeVal').innerText = stime + 'ms'; document.getElementById('pushTimeVal').innerText = ptime + 'ms'; document.getElementById('pauseVal').innerText = pause + 'ms';
+            document.getElementById('leftVal').innerText = l_off + '°'; document.getElementById('rightVal').innerText = r_off + '°';
+            
+            clearTimeout(timer); timer = setTimeout(() => fetch(`/config?swing=${swing}&push=${push}&pitch=${pitch}&stime=${stime}&ptime=${ptime}&pause=${pause}&l_off=${l_off}&r_off=${r_off}&inv_l=${inv_l}&inv_r=${inv_r}`), 50);
+        }
+        function handleMove(clientX, clientY) {
+            const rect = container.getBoundingClientRect();
+            let dx = clientX - rect.left - 85, dy = clientY - rect.top - 85, dist = Math.sqrt(dx * dx + dy * dy), maxDist = 55;
+            if (dist > maxDist) { dx = (dx / dist) * maxDist; dy = (dy / dist) * maxDist; }
+            stick.style.transform = `translate(${dx}px, ${dy}px)`;
+            let normX = Math.round((dx / maxDist) * 100), normY = Math.round((-dy / maxDist) * 100); 
+            if(Math.abs(normX) < 8 && Math.abs(normY) < 8) { normX = 0; normY = 0; }
+            sendVector(normX, normY);
+        }
+        container.addEventListener('pointerdown', (e) => { active = true; handleMove(e.clientX, e.clientY); });
+        window.addEventListener('pointermove', (e) => { if (active) handleMove(e.clientX, e.clientY); });
+        window.addEventListener('pointerup', () => { if (active) { active = false; stick.style.transform = `translate(0px, 0px)`; resetJoystick(); } });
+    </script>
+</body>
+</html>
+)rawliteral";
 
-* **🧠 Local LLM Brain:** Powered by Ollama (`llama3.2`) for fast, local, conversational AI.
-* **🗣️ Voice & Acoustic Barge-in:** Real-time speech recognition with a dynamic pause engine and instant barge-in interruption.
-* **👀 Animated OLED Interface:** 0.96" display featuring 30 FPS animated, wandering minus-sign eyes that yield to synchronized word-by-word text streaming when speaking.
-* **🦿 3-Legged Kinematic Engine:** Custom 5-phase synchronous crutch-gait kinematics specifically engineered for mirrored servos. Supports multi-step pathing sequences (e.g., "Two steps forward, one right").
-* **🌐 Web & OS Integration:** Can launch local Windows applications, read local PC files, fetch live DuckDuckGo web data (weather, news), and execute targeted site searches.
-* **📱 Tactical Web Dashboard:** A responsive HTML dashboard hosted on the ESP32 for live PID tuning, servo trimming, inversion, and joystick control.
+// =========================================================================
+// 3. I2S AUDIO STREAMING ENGINE (FREERTOS TASKS)
+// =========================================================================
+void setupAudio() {
+    i2s_config_t i2s_mic_config = {
+        .mode = (i2s_mode_t)(I2S_MODE_MASTER | I2S_MODE_RX), .sample_rate = 16000,
+        .bits_per_sample = I2S_BITS_PER_SAMPLE_16BIT, .channel_format = I2S_CHANNEL_FMT_ONLY_LEFT,
+        .communication_format = I2S_COMM_FORMAT_STAND_I2S, .intr_alloc_flags = ESP_INTR_FLAG_LEVEL1,
+        .dma_buf_count = 4, .dma_buf_len = 1024, .use_apll = false, .tx_desc_auto_clear = false, .fixed_mclk = 0
+    };
+    i2s_pin_config_t mic_pin_config = { .bck_io_num = I2S_MIC_BCLK, .ws_io_num = I2S_MIC_LRC, .data_out_num = I2S_PIN_NO_CHANGE, .data_in_num = I2S_MIC_DOUT };
+    i2s_driver_install(I2S_NUM_0, &i2s_mic_config, 0, NULL); i2s_set_pin(I2S_NUM_0, &mic_pin_config);
 
-## 🛠️ Hardware Loadout
+    i2s_config_t i2s_spk_config = {
+        .mode = (i2s_mode_t)(I2S_MODE_MASTER | I2S_MODE_TX), .sample_rate = 16000,
+        .bits_per_sample = I2S_BITS_PER_SAMPLE_16BIT, .channel_format = I2S_CHANNEL_FMT_ONLY_LEFT,
+        .communication_format = I2S_COMM_FORMAT_STAND_I2S, .intr_alloc_flags = ESP_INTR_FLAG_LEVEL1,
+        .dma_buf_count = 4, .dma_buf_len = 1024, .use_apll = false, .tx_desc_auto_clear = true, .fixed_mclk = 0
+    };
+    i2s_pin_config_t spk_pin_config = { .bck_io_num = I2S_SPK_BCLK, .ws_io_num = I2S_SPK_LRC, .data_out_num = I2S_SPK_DIN, .data_in_num = I2S_PIN_NO_CHANGE };
+    i2s_driver_install(I2S_NUM_1, &i2s_spk_config, 0, NULL); i2s_set_pin(I2S_NUM_1, &spk_pin_config);
 
-* **Microcontroller:** ESP32 (Wi-Fi enabled)
-* **Actuators:** 2x Servos (SG90 or MG90S)
-* **Display:** 0.96" I2C OLED (SSD1306)
-* **Chassis:** Custom 3D-printed 3-legged upright body
-* **Power:** 5V Buck Converter / LiPo Battery System
-
-### Wiring Schematic
-| Component | ESP32 Pin |
-| :--- | :--- |
-| Left Servo (PWM) | GPIO 18 |
-| Right Servo (PWM) | GPIO 19 |
-| OLED SDA | GPIO 21 |
-| OLED SCL | GPIO 22 |
-
-Core 0 will handle your servo kinematics, OLED parsing, web server, and TCP connections.
-
-Core 1 will run two dedicated FreeRTOS tasks to stream raw 16kHz I2S audio over UDP sockets directly to the Python brain.
-
-(Note: The Python Brain now has a USE_ESP32_AUDIO = True flag at the top. If you wired an I2S Mic and I2S Amp to the ESP32, leave it True. If you just stuffed a Bluetooth speaker inside his chassis, set it to False).
-
-PART 1: The Hardware Interface (ESP32 Firmware)
-You will need an INMP441 (Microphone) and a MAX98357A (Speaker Amp). Wire them to these specific ESP32 pins:
-
-Mic: SCK to Pin 32, WS to Pin 33, SD to Pin 34, L/R to GND.
-
-Speaker: BCLK to Pin 25, LRC to Pin 26, DIN to Pin 27.
-
-## 💻 Software Dependencies
-
-### 1. ESP32 Body (C++)
-Install the following libraries via the Arduino Library Manager:
-* `ESP32Servo`
-* `Adafruit GFX Library`
-* `Adafruit SSD1306`
-
-### 2. Python AI Brain
-Ensure Python 3.10+ is installed, then install the required modules:
-```bash
-pip install ollama pygame edge-tts numpy sounddevice SpeechRecognition ddgs psutil
+    udpSpk.begin(8890); 
+    xTaskCreatePinnedToCore(audioMicTask, "MicTask", 4096, NULL, 2, NULL, 1);
+    xTaskCreatePinnedToCore(audioSpkTask, "SpkTask", 4096, NULL, 2, NULL, 1);
 }
 
-Only the Paranoid Survive
+void audioMicTask(void * pvParameters) {
+    uint8_t buffer[2048]; size_t bytesIn = 0;
+    while(true) {
+        i2s_read(I2S_NUM_0, &buffer, sizeof(buffer), &bytesIn, portMAX_DELAY);
+        if (pythonIpKnown && bytesIn > 0) {
+            udpMic.beginPacket(pythonIP, 8889); udpMic.write(buffer, bytesIn); udpMic.endPacket();
+        }
+    }
+}
+
+void audioSpkTask(void * pvParameters) {
+    uint8_t buffer[2048];
+    while(true) {
+        int packetSize = udpSpk.parsePacket();
+        if (packetSize) {
+            int len = udpSpk.read(buffer, sizeof(buffer)); size_t bytesOut = 0;
+            i2s_write(I2S_NUM_1, &buffer, len, &bytesOut, portMAX_DELAY);
+        } else { vTaskDelay(pdMS_TO_TICKS(5)); }
+    }
+}
+
+// =========================================================================
+// 4. MEMORY & DISPLAY
+// =========================================================================
+void loadNVSConfig() {
+  prefs.begin("tars_cfg", true);
+  legSwingAngle    = prefs.getFloat("swing", 14.0); bodyPushAngle    = prefs.getFloat("push", 16.0);
+  clearanceLiftAngle = prefs.getFloat("pitch", 8.0); swingDurationMs  = prefs.getFloat("stime", 400.0);
+  pushDurationMs   = prefs.getFloat("ptime", 450.0); pauseDurationMs  = prefs.getFloat("pause", 100.0);
+  leftOffset       = prefs.getFloat("l_off", 92.0); rightOffset      = prefs.getFloat("r_off", 92.0);
+  invertLeftServo  = prefs.getBool("inv_l", false); invertRightServo = prefs.getBool("inv_r", false);
+  prefs.end();
+}
+
+void saveNVSConfig() {
+  prefs.begin("tars_cfg", false);
+  prefs.putFloat("swing", legSwingAngle); prefs.putFloat("push", bodyPushAngle);
+  prefs.putFloat("pitch", clearanceLiftAngle); prefs.putFloat("stime", swingDurationMs);
+  prefs.putFloat("ptime", pushDurationMs); prefs.putFloat("pause", pauseDurationMs);
+  prefs.putFloat("l_off", leftOffset); prefs.putFloat("r_off", rightOffset);
+  prefs.putBool("inv_l", invertLeftServo); prefs.putBool("inv_r", invertRightServo);
+  prefs.end();
+}
+
+void moveServos(float leftAngle, float rightAngle) {
+  if (invertLeftServo)  leftAngle  = 180.0 - leftAngle;
+  if (invertRightServo) rightAngle = 180.0 - rightAngle;
+  servoLeft.write((int)constrain(leftAngle, 10.0, 170.0));
+  servoRight.write((int)constrain(rightAngle, 10.0, 170.0));
+}
+
+void enqueueCmd(String dir, int steps) {
+    int nextTail = (qTail + 1) % MAX_QUEUE;
+    if (nextTail != qHead) { cmdQueueDir[qTail] = dir; cmdQueueSteps[qTail] = steps; qTail = nextTail; }
+}
+
+void updateAnimatedEyes() {
+    unsigned long currentMillis = millis();
+    if (currentMillis - lastEyeFrame < 33) return; 
+    lastEyeFrame = currentMillis;
+
+    display.clearDisplay();
+
+    if (isCharging) {
+        chargePulseAngle += 0.1;
+        int pulseWidth = 24 + (int)(sin(chargePulseAngle) * 4.0);
+        display.setTextColor(SSD1306_WHITE); display.setTextSize(1); display.setCursor(32, 8); display.print("CHARGING...");
+        display.fillTriangle(64, 20, 56, 32, 63, 32, SSD1306_WHITE); display.fillTriangle(63, 30, 70, 30, 60, 44, SSD1306_WHITE);
+        display.fillRoundRect(36 - pulseWidth/2, 54, pulseWidth, 4, 2, SSD1306_WHITE); display.fillRoundRect(92 - pulseWidth/2, 54, pulseWidth, 4, 2, SSD1306_WHITE);
+        display.display();
+        return;
+    }
+
+    if (!isBlinking && currentMillis >= nextBlinkTime) { isBlinking = true; blinkStartTime = currentMillis; nextBlinkTime = currentMillis + random(2000, 5500); }
+    int eyeHeight = 5; if (isBlinking) { if (currentMillis - blinkStartTime < 110) eyeHeight = 1; else isBlinking = false; }
+
+    float joystickMag = sqrt(currentX * currentX + currentY * currentY);
+    if (joystickMag > 10.0) { targetGazeX = (currentX / 100.0) * 14.0; targetGazeY = -(currentY / 100.0) * 8.0; } 
+    else {
+        if (currentMillis >= nextGazeShiftTime) {
+            nextGazeShiftTime = currentMillis + random(1200, 3800);
+            int gazeOption = random(0, 6);
+            switch(gazeOption) {
+                case 0: targetGazeX = -14.0; targetGazeY = 0.0; break; case 1: targetGazeX = 14.0; targetGazeY = 0.0; break; case 2: targetGazeX = 0.0; targetGazeY = 0.0; break;
+                case 3: targetGazeX = -10.0; targetGazeY = -5.0; break; case 4: targetGazeX = 10.0; targetGazeY = -5.0; break; case 5: targetGazeX = 0.0; targetGazeY = 5.0; break;
+            }
+        }
+    }
+
+    currentGazeX += (targetGazeX - currentGazeX) * 0.16; currentGazeY += (targetGazeY - currentGazeY) * 0.16;
+    int eyeWidth = 26, drawLeftX = 36 + (int)currentGazeX, drawRightX = 92 + (int)currentGazeX, drawY = 32 + (int)currentGazeY;
+    display.fillRoundRect(drawLeftX - eyeWidth/2, drawY - eyeHeight/2, eyeWidth, eyeHeight, 2, SSD1306_WHITE); display.fillRoundRect(drawRightX - eyeWidth/2, drawY - eyeHeight/2, eyeWidth, eyeHeight, 2, SSD1306_WHITE);
+    display.display();
+}
+
+void updateDisplaySystem() {
+    unsigned long currentMillis = millis();
+    if (currentMillis < aiDisplayTimeout) {
+        display.clearDisplay(); display.setTextSize(1); display.setTextColor(SSD1306_WHITE);
+        for(int i=0; i<4; i++) { display.setCursor(0, i * 16); display.print(oledLines[i]); }
+        display.display();
+    } else { updateAnimatedEyes(); }
+}
+
+// =========================================================================
+// 5. HIGH-CLEARANCE ANTI-DRAG GAIT ENGINE
+// =========================================================================
+void updatePhaseGaitEngine() {
+    static unsigned long lastLoopTime = 0;
+    unsigned long currentMillis = millis();
+    if (currentMillis - lastLoopTime < 15) return; 
+    lastLoopTime = currentMillis;
+
+    if (isWakeShaking) {
+        unsigned long elapsedShake = currentMillis - wakeShakeStartTime;
+        if (elapsedShake < 400) { float offset = sin(elapsedShake * 0.05) * 10.0; moveServos(leftOffset + offset, rightOffset - offset); return; } 
+        else { isWakeShaking = false; }
+    }
+
+    if (isCharging) {
+        currentLeftAngle += (CHARGING_LEFT_LEG_ANGLE - currentLeftAngle) * servoSmoothFactor; currentRightAngle += (rightOffset - currentRightAngle) * servoSmoothFactor;
+        moveServos(currentLeftAngle, currentRightAngle); return;
+    }
+
+    if (!aiStepsActive && qHead != qTail && currentPhase == PHASE_IDLE) {
+        aiStepsActive = true; aiStepsRemaining = cmdQueueSteps[qHead]; String dir = cmdQueueDir[qHead]; qHead = (qHead + 1) % MAX_QUEUE;
+        if (dir == "FORWARD") { aiTargetX = 0.0; aiTargetY = 1.0; } else if (dir == "BACKWARD") { aiTargetX = 0.0; aiTargetY = -1.0; }
+        else if (dir == "LEFT") { aiTargetX = -1.0; aiTargetY = 0.0; } else if (dir == "RIGHT") { aiTargetX = 1.0; aiTargetY = 0.0; }
+    }
+
+    float activeTargetX = targetX, activeTargetY = targetY;
+    if (aiStepsActive) { activeTargetX = aiTargetX * 100.0; activeTargetY = aiTargetY * 100.0; }
+    currentX += (activeTargetX - currentX) * 0.20; currentY += (activeTargetY - currentY) * 0.20;
+    float normX = currentX / 100.0, normY = currentY / 100.0, magnitude = sqrt(normX * normX + normY * normY);
+
+    if (magnitude < 0.08) {
+        currentPhase = PHASE_IDLE; currentLeftAngle += (leftOffset - currentLeftAngle) * 0.15; currentRightAngle += (rightOffset - currentRightAngle) * 0.15;
+        moveServos(currentLeftAngle, currentRightAngle); return;
+    }
+
+    unsigned long elapsedTime = currentMillis - phaseStartTime;
+    float targetLeft = leftOffset, targetRight = rightOffset;
+
+    if (abs(normY) >= abs(normX) - 0.1) {
+        float dirSign = (normY >= 0.0) ? 1.0 : -1.0; float scale = abs(normY);
+        switch (currentPhase) {
+            case PHASE_IDLE: 
+                currentPhase = PHASE_LIFT_AND_SWING; phaseStartTime = currentMillis; break;
+            case PHASE_LIFT_AND_SWING: 
+                // Pitch the body backward massively, while swinging legs forward. Absolute zero drag.
+                targetLeft = leftOffset + (dirSign * legSwingAngle * scale) + clearanceLiftAngle; 
+                targetRight = rightOffset - (dirSign * legSwingAngle * scale) - clearanceLiftAngle; 
+                if (elapsedTime >= swingDurationMs) { currentPhase = PHASE_PLANT; phaseStartTime = currentMillis; } break;
+            case PHASE_PLANT: 
+                targetLeft = leftOffset + (dirSign * legSwingAngle * scale); 
+                targetRight = rightOffset - (dirSign * legSwingAngle * scale); 
+                if (elapsedTime >= pauseDurationMs) { currentPhase = PHASE_PUSH_BODY; phaseStartTime = currentMillis; } break;
+            case PHASE_PUSH_BODY: 
+                // Push body forward and lift back legs slightly
+                targetLeft = leftOffset - (dirSign * bodyPushAngle * scale) - (clearanceLiftAngle * 0.5); 
+                targetRight = rightOffset + (dirSign * bodyPushAngle * scale) + (clearanceLiftAngle * 0.5); 
+                if (elapsedTime >= pushDurationMs) { currentPhase = PHASE_RECOVER; phaseStartTime = currentMillis; } break;
+            case PHASE_RECOVER: 
+                targetLeft = leftOffset - (dirSign * bodyPushAngle * scale); 
+                targetRight = rightOffset + (dirSign * bodyPushAngle * scale); 
+                if (elapsedTime >= pauseDurationMs) { 
+                    if (aiStepsActive) { aiStepsRemaining--; if (aiStepsRemaining <= 0) { aiStepsActive = false; currentPhase = PHASE_IDLE; } else { currentPhase = PHASE_LIFT_AND_SWING; phaseStartTime = currentMillis; } } 
+                    else { currentPhase = PHASE_LIFT_AND_SWING; phaseStartTime = currentMillis; } 
+                } break;
+        }
+    } else {
+        float turnSign = (normX >= 0.0) ? 1.0 : -1.0; float scale = abs(normX);
+        switch (currentPhase) {
+            case PHASE_IDLE: currentPhase = PHASE_LIFT_AND_SWING; phaseStartTime = currentMillis; break;
+            case PHASE_LIFT_AND_SWING: 
+                targetLeft = leftOffset + (turnSign * legSwingAngle * scale) + clearanceLiftAngle; 
+                targetRight = rightOffset + (turnSign * legSwingAngle * scale) - clearanceLiftAngle; 
+                if (elapsedTime >= swingDurationMs) { currentPhase = PHASE_PLANT; phaseStartTime = currentMillis; } break;
+            case PHASE_PLANT: 
+                targetLeft = leftOffset + (turnSign * legSwingAngle * scale); 
+                targetRight = rightOffset + (turnSign * legSwingAngle * scale); 
+                if (elapsedTime >= pauseDurationMs) { currentPhase = PHASE_PUSH_BODY; phaseStartTime = currentMillis; } break;
+            case PHASE_PUSH_BODY: 
+                targetLeft = leftOffset - (turnSign * bodyPushAngle * scale) - (clearanceLiftAngle * 0.5); 
+                targetRight = rightOffset - (turnSign * bodyPushAngle * scale) + (clearanceLiftAngle * 0.5); 
+                if (elapsedTime >= pushDurationMs) { currentPhase = PHASE_RECOVER; phaseStartTime = currentMillis; } break;
+            case PHASE_RECOVER: 
+                targetLeft = leftOffset - (turnSign * bodyPushAngle * scale); 
+                targetRight = rightOffset - (turnSign * bodyPushAngle * scale); 
+                if (elapsedTime >= pauseDurationMs) { 
+                    if (aiStepsActive) { aiStepsRemaining--; if (aiStepsRemaining <= 0) { aiStepsActive = false; currentPhase = PHASE_IDLE; } else { currentPhase = PHASE_LIFT_AND_SWING; phaseStartTime = currentMillis; } } 
+                    else { currentPhase = PHASE_LIFT_AND_SWING; phaseStartTime = currentMillis; } 
+                } break;
+        }
+    }
+    currentLeftAngle += (targetLeft - currentLeftAngle) * servoSmoothFactor; currentRightAngle += (targetRight - currentRightAngle) * servoSmoothFactor;
+    moveServos(currentLeftAngle, currentRightAngle);
+}
+
+// =========================================================================
+// 6. SETUP & MAIN EXECUTION LOOP
+// =========================================================================
+void setup() {
+    Serial.begin(115200);
+
+    if(!display.begin(SSD1306_SWITCHCAPVCC, SCREEN_ADDRESS)) { for(;;); }
+    display.clearDisplay(); display.setTextColor(SSD1306_WHITE); display.setTextSize(2); display.setCursor(10, 24); display.print("CONNECTING"); display.display();
+
+    WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
+    while (WiFi.status() != WL_CONNECTED) { delay(500); }
+
+    if (MDNS.begin(HOSTNAME)) { MDNS.addService("http", "tcp", 80); MDNS.addService("tars-socket", "tcp", 8888); }
+
+    loadNVSConfig();
+    servoLeft.attach(SERVO_LEFT_PIN); servoRight.attach(SERVO_RIGHT_PIN); moveServos(leftOffset, rightOffset);
+
+    // Initialize Audio I2S Tasks
+    setupAudio();
+
+    display.clearDisplay(); display.setTextSize(1);
+    display.setCursor(0, 16); display.print("IP: "); display.println(WiFi.localIP());
+    display.setCursor(0, 32); display.println("mDNS: tars.local"); display.display();
+    delay(2000);
+
+    server.on("/", []() { server.send(200, "text/html", HTML_INTERFACE); });
+    server.on("/vector", []() { if (server.hasArg("x") && server.hasArg("y")) { aiStepsActive = false; qHead = 0; qTail = 0; targetX = server.arg("x").toFloat(); targetY = server.arg("y").toFloat(); server.send(200, "text/plain", "OK"); } });
+    server.on("/config", []() {
+        if (server.hasArg("swing")) legSwingAngle = server.arg("swing").toFloat(); if (server.hasArg("push")) bodyPushAngle = server.arg("push").toFloat(); if (server.hasArg("pitch")) clearanceLiftAngle = server.arg("pitch").toFloat();
+        if (server.hasArg("stime")) swingDurationMs = server.arg("stime").toFloat(); if (server.hasArg("ptime")) pushDurationMs = server.arg("ptime").toFloat(); if (server.hasArg("pause")) pauseDurationMs = server.arg("pause").toFloat();
+        if (server.hasArg("l_off")) leftOffset = server.arg("l_off").toFloat(); if (server.hasArg("r_off")) rightOffset = server.arg("r_off").toFloat();
+        if (server.hasArg("inv_l")) invertLeftServo = (server.arg("inv_l").toInt() == 1); if (server.hasArg("inv_r")) invertRightServo = (server.arg("inv_r").toInt() == 1);
+        server.send(200, "text/plain", "OK");
+    });
+    server.on("/charging", []() { if (server.hasArg("state")) { isCharging = (server.arg("state").toInt() == 1); server.send(200, "text/plain", "OK"); } });
+    server.on("/save", []() { saveNVSConfig(); server.send(200, "text/plain", "OK"); });
+
+    server.begin(); socketServer.begin();
+    nextBlinkTime = millis() + 2000; nextGazeShiftTime = millis() + 1500;
+}
+
+void loop() {
+    server.handleClient();
+    if (!activeClient || !activeClient.connected()) { activeClient = socketServer.available(); }
+
+    if (activeClient && activeClient.connected() && activeClient.available()) {
+        if (!pythonIpKnown) { pythonIP = activeClient.remoteIP(); pythonIpKnown = true; }
+
+        String cmd = activeClient.readStringUntil('\n');
+        cmd.trim();
+
+        if (cmd == "CHARGE_ON") { isCharging = true; } 
+        else if (cmd == "CHARGE_OFF") { isCharging = false; } 
+        else if (cmd == "WAKE_SHAKE") { isWakeShaking = true; wakeShakeStartTime = millis(); } 
+        else if (cmd.startsWith("CONFIG:")) {
+            // Dynamic Voice Tuning injected by Python Brain
+            String param = cmd.substring(7);
+            if(param == "faster") { swingDurationMs = 300.0; pushDurationMs = 350.0; pauseDurationMs = 50.0; servoSmoothFactor = 0.25;}
+            if(param == "slower") { swingDurationMs = 600.0; pushDurationMs = 650.0; pauseDurationMs = 200.0; servoSmoothFactor = 0.12;}
+            if(param == "higher") { clearanceLiftAngle = 12.0; legSwingAngle = 18.0; }
+            if(param == "reset")  { loadNVSConfig(); }
+        }
+        else if (cmd.startsWith("DISP:")) {
+            String payload = cmd.substring(5); int lineIdx = 0, startPos = 0;
+            while(lineIdx < 4) {
+                int pipeIdx = payload.indexOf('|', startPos);
+                if (pipeIdx != -1) { oledLines[lineIdx] = payload.substring(startPos, pipeIdx); startPos = pipeIdx + 1; } 
+                else { oledLines[lineIdx] = payload.substring(startPos); break; } lineIdx++;
+            }
+            while(lineIdx < 4) { oledLines[lineIdx] = ""; lineIdx++; }
+            aiDisplayTimeout = millis() + 5000; 
+        } else if (cmd.startsWith("SEQ:")) {
+            String seq = cmd.substring(4); int startIdx = 0;
+            while (startIdx < seq.length()) {
+                int pipeIdx = seq.indexOf('|', startIdx); if (pipeIdx == -1) pipeIdx = seq.length();
+                String moveCmd = seq.substring(startIdx, pipeIdx); int underscoreIdx = moveCmd.indexOf('_');
+                if (underscoreIdx != -1) { String dir = moveCmd.substring(0, underscoreIdx); int steps = moveCmd.substring(underscoreIdx + 1).toInt(); enqueueCmd(dir, steps); }
+                startIdx = pipeIdx + 1;
+            }
+        }
+    }
+    updatePhaseGaitEngine(); updateDisplaySystem();
+}
