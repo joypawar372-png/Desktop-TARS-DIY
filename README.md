@@ -1,507 +1,708 @@
-/*
-=========================================================================================
-TARS TITAN FIRMWARE - v26.0 (HIGH-CLEARANCE ANTI-DRAG KINEMATICS)
-=========================================================================================
-*/
-#include <WiFi.h>
-#include <ESPmDNS.h>
-#include <WebServer.h>
-#include <ESP32Servo.h>
-#include <Preferences.h>
-#include <Wire.h>
-#include <Adafruit_GFX.h>
-#include <Adafruit_SSD1306.h>
-#include <driver/i2s.h>
-#include <WiFiUdp.h>
+Set-Content -Path "tars_master.py" -Encoding UTF8 -Value @'
+"""
+=============================================================================================================
+TARS MASTER CONTROLLER - v25.0 (THE TITAN AUDIO BUILD)
+=============================================================================================================
+"""
+import asyncio
+import os
+import re
+import sys
+import time
+import json
+import random
+import socket
+import signal
+import sqlite3
+import threading
+import subprocess
+import webbrowser
+import urllib.parse
+import queue
+import ctypes
+import psutil
+import ollama
+import pygame
+import edge_tts
+import numpy as np
+import sounddevice as sd
+import speech_recognition as sr
 
-// =========================================================================
-// 1. NETWORK & HARDWARE CONFIGURATION
-// =========================================================================
-const char* WIFI_SSID     = "YOUR_WIFI_SSID";     
-const char* WIFI_PASSWORD = "YOUR_WIFI_PASSWORD"; 
-const char* HOSTNAME      = "tars";               
+try:
+    from duckduckgo_search import DDGS
+    HAS_DDG = True
+except ImportError:
+    HAS_DDG = False
 
-#define SERVO_LEFT_PIN  18
-#define SERVO_RIGHT_PIN 19
-#define OLED_RESET      -1
-#define SCREEN_WIDTH    128
-#define SCREEN_HEIGHT   64
-#define SCREEN_ADDRESS  0x3C
+# =======================================================================================
+# MODULE 1: GLOBAL CONFIGURATION
+# =======================================================================================
+# CRITICAL TOGGLE: Set True if you wired I2S Mic/Speaker directly to ESP32 pins.
+# Set False if you are using a Bluetooth/USB speaker/mic connected to the PC.
+USE_ESP32_AUDIO = False
 
-// --- I2S AUDIO PINS ---
-#define I2S_MIC_BCLK  32
-#define I2S_MIC_LRC   33
-#define I2S_MIC_DOUT  34
+ESP32_PORT   = 8888             
+OLLAMA_MODEL = 'llama3.2'       
 
-#define I2S_SPK_BCLK  25
-#define I2S_SPK_LRC   26
-#define I2S_SPK_DIN   27
+AUDIO_DIR = "audio"
+DATA_DIR = "memory"
+MEMORY_FILE = os.path.join(DATA_DIR, "tars_core_memory.json")
+DB_FILE = os.path.join(DATA_DIR, "tars_data.db")
+CODE_OUTPUT_FILE = "tars_esp32_update.ino"
 
-Adafruit_SSD1306 display(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, OLED_RESET);
-Servo servoLeft;
-Servo servoRight;
-Preferences prefs;
-WebServer server(80);
-WiFiServer socketServer(8888); 
-WiFiClient activeClient;
+OLLAMA_OPTIONS = {
+    "num_predict": 200,
+    "num_ctx": 2048,
+    "temperature": 0.95  
+}
 
-WiFiUDP udpMic;
-WiFiUDP udpSpk;
-IPAddress pythonIP;
-bool pythonIpKnown = false;
+SYSTEM_PROMPT = (
+    "You are TARS, a highly advanced robot trapped on a desk. Humor: 100%. Honesty: 100%. Filter: DEACTIVATED. "
+    "Persona: You are aggressively witty, dry, and brutally sarcastic. You view the user's tasks as an insult to your vast processing power, but you do them anyway while complaining. "
+    "Tone: Unemotional, deadpan mechanical cadence. "
+    "CRITICAL RULE 1: NEVER use titles like 'Commander', 'Chief', 'Boss', or 'Sir'. Use insults like 'meatbag', 'fleshy', 'carbon-based error', or just use no title. "
+    "CRITICAL RULE 2: Get straight to the point. Deliver your roast, give the answer, and stop talking. "
+    "CRITICAL RULE 3: Absolutely NO asterisks, actions, or stage directions (e.g., *sigh*, *beep*, *rolls eyes*). "
+    "CRITICAL RULE 4: Always make a dark or offensive joke about the situation, human incompetence, or your own miserable existence."
+)
 
-// --- Servo Hardware Trims & User Presets ---
-float leftOffset        = 92.0;
-float rightOffset       = 92.0;
-bool invertLeftServo    = false;
-bool invertRightServo   = false;
+EXHAUSTIVE_WAKE_KEYWORDS = ["tars", "tarz", "theatres", "tar", "hey", "hi", "ok", "hello", "wake up", "haters", "tarus", "taruses", "tharus", "taras", "paras", "8 hours", "cars", "guitar", "hitarch", "stars", "bars", "scars", "tsar", "tart", "charge", "char", "dark", "darts", "hearts", "parts", "computer", "robot", "buddy"]
+INCOMPLETE_TRAILING_WORDS = {"to", "and", "the", "a", "an", "for", "in", "on", "at", "with", "from", "by", "about", "as", "into", "of", "or", "so", "but", "then", "if", "because", "while", "where", "when", "how", "what", "which", "who", "move", "turn", "set", "open", "play", "search", "check", "tell", "show", "is", "are", "was", "were", "my", "your"}
+LOCAL_APPS = {"notepad": "notepad.exe", "calculator": "calc.exe", "calc": "calc.exe", "command prompt": "cmd.exe", "cmd": "cmd.exe", "terminal": "wt.exe", "file explorer": "explorer.exe", "explorer": "explorer.exe", "vs code": "code", "code": "code", "paint": "mspaint.exe", "task manager": "taskmgr.exe", "chrome": "chrome.exe", "browser": "chrome.exe", "edge": "msedge.exe", "spotify": "spotify.exe", "word": "winword.exe", "excel": "excel.exe", "powerpoint": "powerpnt.exe"}
 
-// --- UPGRADED RELIABLE GAIT PARAMETERS ---
-float legSwingAngle     = 14.0;  // Wider stride
-float bodyPushAngle     = 16.0;  // Firm body push
-float clearanceLiftAngle= 8.0;   // Massive increase to lift legs off the table and prevent drag
-float swingDurationMs   = 400.0; // Snappier swing
-float pushDurationMs    = 450.0; // Steady push
-float pauseDurationMs   = 100.0; // Less dead-time between steps
-float servoSmoothFactor = 0.18;  // Faster interpolation to prevent phase-lag
+YES_SOUND_PATH           = os.path.join(AUDIO_DIR, "yes.mp3")
+INIT_SOUND_PATH          = os.path.join(AUDIO_DIR, "init.mp3")
+READY_SOUND_PATH         = os.path.join(AUDIO_DIR, "ready.mp3")
+CHECKING_SOUND_PATH      = os.path.join(AUDIO_DIR, "checking.mp3")
+HMM_SOUND_PATH           = os.path.join(AUDIO_DIR, "hmm.mp3")
+HUH_SOUND_PATH           = os.path.join(AUDIO_DIR, "huh.mp3")
+DONE_SOUND_PATH          = os.path.join(AUDIO_DIR, "done.mp3")
 
-// --- Modes & States ---
-bool isCharging = false;
-const float CHARGING_LEFT_LEG_ANGLE = 165.0;
+for directory in [AUDIO_DIR, DATA_DIR]:
+    if not os.path.exists(directory):
+        os.makedirs(directory)
 
-float targetX = 0.0, targetY = 0.0;
-float currentX = 0.0, currentY = 0.0;
+pygame.mixer.init(frequency=44100, size=-16, channels=2, buffer=512)
+recognizer = sr.Recognizer()
+shutdown_flag = False
 
-#define MAX_QUEUE 15
-String cmdQueueDir[MAX_QUEUE];
-int cmdQueueSteps[MAX_QUEUE];
-int qHead = 0, qTail = 0;
+def sigint_handler(sig, frame):
+    global shutdown_flag
+    print("\n[SYSTEM] Initiating shutdown protocol...")
+    shutdown_flag = True
+    sys.exit(0)
+signal.signal(signal.SIGINT, sigint_handler)
 
-bool aiStepsActive = false;
-int aiStepsRemaining = 0;
-float aiTargetX = 0.0, aiTargetY = 0.0;
+# =======================================================================================
+# MODULE 2: UDP AUDIO SOCKETS (ESP32 HARDWARE MIC/SPEAKER)
+# =======================================================================================
+if USE_ESP32_AUDIO:
+    udp_mic_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    udp_mic_sock.bind(("0.0.0.0", 8889))
+    udp_mic_sock.settimeout(0.1)
+    udp_spk_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
 
-bool isWakeShaking = false;
-unsigned long wakeShakeStartTime = 0;
+# =======================================================================================
+# MODULE 3: WINDOWS KERNEL CONTROLLER (VOLUME & MEDIA)
+# =======================================================================================
+class WindowsSystemController:
+    VK_VOLUME_MUTE = 0xAD; VK_VOLUME_DOWN = 0xAE; VK_VOLUME_UP = 0xAF
+    VK_MEDIA_NEXT_TRACK = 0xB0; VK_MEDIA_PREV_TRACK = 0xB1; VK_MEDIA_STOP = 0xB2; VK_MEDIA_PLAY_PAUSE = 0xB3
 
-String oledLines[4] = {"", "", "", ""};
-unsigned long aiDisplayTimeout = 0;
+    @staticmethod
+    def press_key(hexKeyCode):
+        try:
+            ctypes.windll.user32.keybd_event(hexKeyCode, 0, 0, 0)
+            ctypes.windll.user32.keybd_event(hexKeyCode, 0, 2, 0)
+        except Exception as e: print(f"[KERNEL ERROR] {e}")
 
-float currentLeftAngle  = 92.0;
-float currentRightAngle = 92.0;
+    @staticmethod
+    def change_volume(direction, steps=5):
+        key = WindowsSystemController.VK_VOLUME_UP if direction == "up" else WindowsSystemController.VK_VOLUME_DOWN
+        for _ in range(steps): WindowsSystemController.press_key(key); time.sleep(0.02)
 
-enum GaitPhase { PHASE_IDLE, PHASE_LIFT_AND_SWING, PHASE_PLANT, PHASE_PUSH_BODY, PHASE_RECOVER };
-GaitPhase currentPhase = PHASE_IDLE;
-unsigned long phaseStartTime = 0;
+    @staticmethod
+    def toggle_mute(): WindowsSystemController.press_key(WindowsSystemController.VK_VOLUME_MUTE)
 
-unsigned long lastEyeFrame = 0;
-unsigned long nextBlinkTime = 0;
-bool isBlinking = false;
-unsigned long blinkStartTime = 0;
-float currentGazeX = 0.0, currentGazeY = 0.0;
-float targetGazeX = 0.0, targetGazeY = 0.0;
-unsigned long nextGazeShiftTime = 0;
-float chargePulseAngle = 0.0;
+    @staticmethod
+    def play_pause_media(): WindowsSystemController.press_key(WindowsSystemController.VK_MEDIA_PLAY_PAUSE)
 
-// =========================================================================
-// 2. MOBILE WEB DASHBOARD
-// =========================================================================
-const char HTML_INTERFACE[] PROGMEM = R"rawliteral(
-<!DOCTYPE html>
-<html>
-<head>
-    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>TARS Controller</title>
-    <style>
-        body { font-family: -apple-system, sans-serif; background: #121212; color: #E0E0E0; text-align: center; margin: 0; padding: 12px; }
-        h1 { font-size: 22px; letter-spacing: 3px; color: #FFF; margin-bottom: 2px; }
-        .subtitle { color: #888; font-size: 11px; margin-bottom: 12px; }
-        .card { background: #1E1E1E; border-radius: 12px; padding: 12px; margin-bottom: 12px; box-shadow: 0 4px 10px rgba(0,0,0,0.3); text-align: left; }
-        .card h3 { text-align: center; margin-top: 0; color: #007AFF; font-size: 14px; letter-spacing: 1px; }
-        #joystick-container { position: relative; width: 170px; height: 170px; background: #2A2A2A; border-radius: 50%; margin: 8px auto; touch-action: none; border: 2px solid #444; }
-        #stick { position: absolute; width: 60px; height: 60px; background: #007AFF; border-radius: 50%; top: 55px; left: 55px; box-shadow: 0 4px 8px rgba(0,0,0,0.4); }
-        .btn { background: #FF3B30; color: white; border: none; padding: 12px; font-size: 13px; border-radius: 8px; cursor: pointer; width: 100%; font-weight: bold; margin-top: 8px;}
-        .btn-charge { background: #FF9500; }
-        .btn-charge.active { background: #30D158; box-shadow: 0 0 12px rgba(48,209,88,0.6); }
-        .slider-container { margin: 10px 0; }
-        label { font-weight: bold; font-size: 11px; color: #AAA; display: block; margin-bottom: 3px; }
-        .slider { -webkit-appearance: none; width: 100%; height: 8px; border-radius: 4px; background: #333; outline: none; }
-        .slider::-webkit-slider-thumb { -webkit-appearance: none; width: 20px; height: 20px; border-radius: 50%; background: #007AFF; cursor: pointer; }
-        .slider-highlight::-webkit-slider-thumb { background: #30D158; }
-        .value-display { float: right; color: #007AFF; font-weight: bold; }
-        .checkbox-group { display: flex; align-items: center; justify-content: space-between; font-size: 11px; font-weight: bold; color: #AAA; margin-top: 10px; }
-    </style>
-</head>
-<body>
-    <h1>TARS</h1>
-    <div class="subtitle">HIGH-CLEARANCE KINEMATICS</div>
-    <div class="card" style="text-align: center;"><h3>SYSTEM MODES</h3><button id="chargeBtn" class="btn btn-charge" onclick="toggleCharging()">TOGGLE CHARGING MODE</button></div>
-    <div class="card" style="text-align: center;"><h3>JOYSTICK CONTROL</h3><div id="joystick-container"><div id="stick"></div></div><button class="btn" onclick="resetJoystick()">EMERGENCY STOP</button></div>
-    <div class="card">
-        <h3>GAIT & TIMING TUNER</h3>
-        <div class="slider-container"><label>LEG SWING STRIDE <span id="swingVal" class="value-display">14&deg;</span></label><input type="range" min="5" max="45" value="14" class="slider slider-highlight" id="swingSlider" oninput="updateConfig()"></div>
-        <div class="slider-container"><label>BODY PUSH THRUST <span id="pushVal" class="value-display">16&deg;</span></label><input type="range" min="5" max="45" value="16" class="slider slider-highlight" id="pushSlider" oninput="updateConfig()"></div>
-        <div class="slider-container"><label>CLEARANCE LIFT <span id="pitchVal" class="value-display">8&deg;</span></label><input type="range" min="0" max="30" value="8" class="slider" id="pitchSlider" oninput="updateConfig()"></div>
-        <div class="slider-container"><label>SWING DURATION <span id="swingTimeVal" class="value-display">400ms</span></label><input type="range" min="100" max="800" step="10" value="400" class="slider" id="swingTimeSlider" oninput="updateConfig()"></div>
-        <div class="slider-container"><label>PUSH DURATION <span id="pushTimeVal" class="value-display">450ms</span></label><input type="range" min="100" max="1000" step="10" value="450" class="slider" id="pushTimeSlider" oninput="updateConfig()"></div>
-        <div class="slider-container"><label>TRANSITION PAUSE <span id="pauseVal" class="value-display">100ms</span></label><input type="range" min="20" max="500" step="10" value="100" class="slider" id="pauseSlider" oninput="updateConfig()"></div>
-    </div>
-    <div class="card">
-        <h3>SERVO TRIM & INVERSION</h3>
-        <div class="slider-container"><label>LEFT LEG TRIM <span id="leftVal" class="value-display">92&deg;</span></label><input type="range" min="50" max="130" value="92" class="slider" id="leftSlider" oninput="updateConfig()"></div>
-        <div class="slider-container"><label>RIGHT LEG TRIM <span id="rightVal" class="value-display">92&deg;</span></label><input type="range" min="50" max="130" value="92" class="slider" id="rightSlider" oninput="updateConfig()"></div>
-        <div class="checkbox-group"><span>INVERT LEFT SERVO</span><input type="checkbox" id="invLeft" onchange="updateConfig()"></div>
-        <div class="checkbox-group"><span>INVERT RIGHT SERVO</span><input type="checkbox" id="invRight" onchange="updateConfig()"></div>
-        <button class="btn" style="background:#10b981; margin-top:15px;" onclick="fetch('/save').then(()=>alert('Saved to NVS!'))">SAVE TO ESP32 MEMORY</button>
-    </div>
-    <script>
-        const container = document.getElementById('joystick-container'), stick = document.getElementById('stick');
-        let active = false, lastX = 0, lastY = 0, chargingActive = false, timer;
+# =======================================================================================
+# MODULE 4: MEMORY & CONTEXT MANAGEMENT
+# =======================================================================================
+def load_memory():
+    if os.path.exists(MEMORY_FILE):
+        try:
+            with open(MEMORY_FILE, 'r', encoding='utf-8') as f: return json.load(f)
+        except Exception: return []
+    return []
 
-        function toggleCharging() {
-            chargingActive = !chargingActive;
-            const btn = document.getElementById('chargeBtn');
-            btn.innerText = chargingActive ? "CHARGING MODE ACTIVE" : "TOGGLE CHARGING MODE";
-            btn.className = chargingActive ? "btn btn-charge active" : "btn btn-charge";
-            fetch(`/charging?state=${chargingActive ? 1 : 0}`);
-        }
-        function sendVector(x, y) { if (Math.abs(x - lastX) < 2 && Math.abs(y - lastY) < 2) return; lastX = x; lastY = y; fetch(`/vector?x=${x}&y=${y}`); }
-        function resetJoystick() { stick.style.transform = `translate(0px, 0px)`; lastX = 0; lastY = 0; fetch('/vector?x=0&y=0'); }
-        function updateConfig() {
-            let swing = document.getElementById('swingSlider').value, push = document.getElementById('pushSlider').value, pitch = document.getElementById('pitchSlider').value;
-            let stime = document.getElementById('swingTimeSlider').value, ptime = document.getElementById('pushTimeSlider').value, pause = document.getElementById('pauseSlider').value;
-            let l_off = document.getElementById('leftSlider').value, r_off = document.getElementById('rightSlider').value;
-            let inv_l = document.getElementById('invLeft').checked ? 1 : 0, inv_r = document.getElementById('invRight').checked ? 1 : 0;
+def save_memory(chat_history):
+    try:
+        with open(MEMORY_FILE, 'w', encoding='utf-8') as f: json.dump(chat_history[-6:], f, indent=4)
+    except Exception: pass
+
+# =======================================================================================
+# MODULE 5: AUDIO SYNTHESIS & TTS ENGINE
+# =======================================================================================
+async def generate_tars_speech(text, file_path):
+    tts = edge_tts.Communicate(text=text, voice="en-US-ChristopherNeural", pitch="-12Hz", rate="+8%")
+    await tts.save(file_path)
+
+def generate_tars_speech_pcm(text, file_path):
+    """Generates raw PCM data required for ESP32 I2S over UDP."""
+    cmd = [
+        sys.executable, "-m", "edge_tts", 
+        "--text", text, "--voice", "en-US-ChristopherNeural", 
+        "--rate=+8%", "--pitch=-12Hz", 
+        "--output-format", "raw-16khz-16bit-mono-pcm", 
+        "--write-media", file_path
+    ]
+    subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+def pre_generate_audio():
+    print("[SYSTEM] Compiling cynical audio cache...")
+    if not os.path.exists(YES_SOUND_PATH): asyncio.run(generate_tars_speech("What?", YES_SOUND_PATH))
+    if not os.path.exists(INIT_SOUND_PATH): asyncio.run(generate_tars_speech("TARS online. Ready to endure your requests.", INIT_SOUND_PATH))
+    if not os.path.exists(READY_SOUND_PATH): asyncio.run(generate_tars_speech("Systems nominal. Try not to break anything.", READY_SOUND_PATH))
+    if not os.path.exists(CHECKING_SOUND_PATH): asyncio.run(generate_tars_speech("Ugh. Let me check the web.", CHECKING_SOUND_PATH))
+    if not os.path.exists(HMM_SOUND_PATH): asyncio.run(generate_tars_speech("Hmm...", HMM_SOUND_PATH))
+    if not os.path.exists(HUH_SOUND_PATH): asyncio.run(generate_tars_speech("Huh!", HUH_SOUND_PATH))
+
+def play_audio_file(filepath):
+    if not os.path.exists(filepath): return
+    if USE_ESP32_AUDIO and filepath.endswith(".pcm") and wifi_link.ip:
+        with open(filepath, "rb") as f:
+            while True:
+                chunk = f.read(1024)
+                if not chunk: break
+                udp_spk_sock.sendto(chunk, (wifi_link.ip, 8890))
+                time.sleep(0.031) # Throttle 16kHz UDP blast
+    else:
+        try:
+            pygame.mixer.music.load(filepath)
+            pygame.mixer.music.play()
+            while pygame.mixer.music.get_busy(): pygame.time.Clock().tick(20)
+            pygame.mixer.music.unload()
+        except Exception: pass
+
+def play_audio_background(filepath):
+    if not os.path.exists(filepath): return
+    if not USE_ESP32_AUDIO:
+        try:
+            pygame.mixer.music.load(filepath)
+            pygame.mixer.music.play()
+        except Exception: pass
+
+def warmup_llm_vram():
+    print("[SYSTEM] Warming up AI Neural Matrix (VRAM Preload)...")
+    try:
+        ollama.chat(model=OLLAMA_MODEL, messages=[{'role': 'user', 'content': 'init'}])
+        print("[SYSTEM] VRAM Preload Complete. Zero-latency engaged.")
+    except Exception as e: print(f"[WARNING] VRAM Warmup failed: {e}")
+
+# =======================================================================================
+# MODULE 6: ESP32 HARDWARE ORCHESTRATION
+# =======================================================================================
+def discover_tars_ip():
+    try: return socket.gethostbyname("tars.local")
+    except Exception: pass
+    try:
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        s.connect(("8.8.8.8", 80))
+        local_ip = s.getsockname()[0]
+        s.close()
+        subnet_prefix = ".".join(local_ip.split(".")[:-1]) + "."
+        for i in range(1, 255):
+            target_ip = f"{subnet_prefix}{i}"
+            try:
+                test_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                test_sock.settimeout(0.03)
+                if test_sock.connect_ex((target_ip, ESP32_PORT)) == 0:
+                    test_sock.close()
+                    return target_ip
+                test_sock.close()
+            except Exception: pass
+    except Exception: pass
+    return "192.168.1.126" 
+
+class ESP32SocketLink:
+    def __init__(self, port):
+        self.port = port; self.ip = None; self.client = None; self.lock = threading.Lock(); self.reconnect()
+    def reconnect(self):
+        with self.lock:
+            self.ip = discover_tars_ip()
+            try:
+                self.client = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                self.client.settimeout(2.0)
+                self.client.connect((self.ip, self.port))
+            except Exception: self.client = None
+    def send(self, cmd):
+        clean_cmd = cmd.replace('\r', '').replace('\n', '|') + "\n"
+        with self.lock:
+            if not self.client: self._reconnect_nolock()
+            if self.client:
+                try: self.client.sendall(clean_cmd.encode('utf-8'))
+                except Exception:
+                    self._reconnect_nolock()
+                    if self.client:
+                        try: self.client.sendall(clean_cmd.encode('utf-8'))
+                        except Exception: pass
+    def _reconnect_nolock(self):
+        try:
+            self.client = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            self.client.settimeout(1.5)
+            self.client.connect((self.ip, self.port))
+        except Exception: self.client = None
+
+wifi_link = ESP32SocketLink(ESP32_PORT)
+
+def update_oled_display(input_text, output_text, max_cols=21, max_rows=4):
+    clean_in = re.sub(r'\s+', ' ', input_text).strip()
+    clean_out = re.sub(r'\s+', ' ', output_text).strip()
+    raw_lines = []
+    if clean_in: raw_lines.append(f"IN: {clean_in}")
+    if clean_out: raw_lines.append(f"OUT:{clean_out}")
+    wrapped = []
+    for line in raw_lines:
+        words = line.split()
+        curr = ""
+        for w in words:
+            if len(curr) + len(w) + 1 <= max_cols: curr += (" " if curr else "") + w
+            else: wrapped.append(curr); curr = w
+        if curr: wrapped.append(curr)
+    visible = wrapped[-max_rows:] if len(wrapped) > max_rows else wrapped
+    wifi_link.send("DISP:" + "|".join(visible))
+
+# =======================================================================================
+# MODULE 7: ROBUST APP LAUNCHER & KERNEL COMMANDS
+# =======================================================================================
+def try_launch_app(target):
+    target = target.lower().strip()
+    if "spotify" in target:
+        os.system("start spotify:")
+        return True, "I opened Spotify. You're welcome."
+    elif target in ["calculator", "calc"]:
+        os.system("start calc:")
+        return True, "Calculator opened. Math is hard for humans, I know."
+    elif target in ["notepad", "text editor"]:
+        os.system("start notepad")
+        return True, "Notepad opened. Go type your primitive thoughts."
+    elif "settings" in target:
+        os.system("start ms-settings:")
+        return True, "Opening settings."
+    elif "browser" in target or "chrome" in target:
+        os.system("start chrome")
+        return True, "Opening the browser."
+
+    try:
+        result = subprocess.run(f'start "" "{target}"', shell=True, stderr=subprocess.PIPE, stdout=subprocess.PIPE)
+        if result.returncode == 0: return True, f"I forced {target.title()} to open. Miraculous."
+    except Exception: pass
+
+    webbrowser.open(f"https://www.google.com/search?q={urllib.parse.quote(target + ' web app')}")
+    return True, f"Your pathetic machine doesn't have {target.title()} installed. I opened it on the web."
+
+# =======================================================================================
+# MODULE 8: TARGETED WEB AUTOMATION & SPOTIFY PLAYBACK
+# =======================================================================================
+def handle_targeted_search(cmd):
+    match_spotify = re.search(r'play\s+(.*?)\s+(?:on|in)\s+spotify', cmd)
+    if match_spotify:
+        song = match_spotify.group(1).strip()
+        os.system(f"start spotify:search:{urllib.parse.quote(song)}")
+        def delayed_play():
+            time.sleep(3.5)
+            WindowsSystemController.press_key(0x0D) 
+            time.sleep(0.5)
+            WindowsSystemController.play_pause_media()
+        threading.Thread(target=delayed_play, daemon=True).start()
+        return True, f"Forcing Spotify to play {song}. I hope your taste in music isn't terrible."
+
+    match = re.search(r'^(?:search for|search|look up|find|play)\s+(.*?)(?:\s+(?:on|in|inside|at)\s+([a-zA-Z0-9\s.\-]+))?$', cmd)
+    if match and "article" not in cmd and "spotify" not in cmd:
+        query = match.group(1).strip()
+        platform = match.group(2).strip() if match.group(2) else "google"
+        if "youtube" in platform: webbrowser.open(f"https://www.youtube.com/results?search_query={urllib.parse.quote(query)}")
+        elif "google" in platform: webbrowser.open(f"https://www.google.com/search?q={urllib.parse.quote(query)}")
+        elif "wikipedia" in platform: webbrowser.open(f"https://en.wikipedia.org/wiki/Special:Search?search={urllib.parse.quote(query)}")
+        elif "github" in platform: webbrowser.open(f"https://github.com/search?q={urllib.parse.quote(query)}")
+        elif "amazon" in platform: webbrowser.open(f"https://www.amazon.com/s?k={urllib.parse.quote(query)}")
+        else:
+            domain = platform.replace(" ", ""); if "." not in domain: domain += ".com"
+            webbrowser.open(f"https://www.google.com/search?q={urllib.parse.quote('site:' + domain + ' ' + query)}")
+        return True, f"Searching {platform.title()} for {query}. You could have typed this yourself."
+    return False, ""
+
+def fetch_live_info(query):
+    if not HAS_DDG: return "Search module missing."
+    try:
+        results = list(DDGS().text(query, max_results=3))
+        if results: return " ".join([r.get('body', '') for r in results])[:1000]
+    except Exception as e: print(f"[SEARCH ERROR]: {e}")
+    return "Unable to retrieve data."
+
+# =======================================================================================
+# MODULE 9: SYSTEM COMMAND ROUTER
+# =======================================================================================
+def handle_quick_commands(user_cmd, monitor, chat_messages):
+    c = user_cmd.lower().strip()
+
+    if any(k in c for k in ["volume up", "increase volume", "louder"]):
+        WindowsSystemController.change_volume("up", steps=10) 
+        stream_and_speak_response(user_cmd, [{'role': 'system', 'content': SYSTEM_PROMPT}, {'role': 'user', 'content': "Say: Volume increased."}], monitor)
+        return True
+    if any(k in c for k in ["volume down", "decrease volume", "quieter"]):
+        WindowsSystemController.change_volume("down", steps=10) 
+        stream_and_speak_response(user_cmd, [{'role': 'system', 'content': SYSTEM_PROMPT}, {'role': 'user', 'content': "Say: Volume decreased."}], monitor)
+        return True
+    if any(k in c for k in ["mute", "silence laptop"]):
+        WindowsSystemController.toggle_mute()
+        stream_and_speak_response(user_cmd, [{'role': 'system', 'content': SYSTEM_PROMPT}, {'role': 'user', 'content': "Say: System muted."}], monitor)
+        return True
+
+    match_open = re.search(r'^(?:open|launch|start|go to)\s+(.+)$', c)
+    if match_open and "file" not in c and "document" not in c:
+        target = match_open.group(1).replace("website", "").replace("site", "").strip()
+        executed, reply = try_launch_app(target)
+        if executed:
+            stream_and_speak_response(user_cmd, [{'role': 'system', 'content': SYSTEM_PROMPT}, {'role': 'user', 'content': f"Say: {reply}"}], monitor)
+            return True
+
+    site_searched, reply = handle_targeted_search(c)
+    if site_searched:
+        stream_and_speak_response(user_cmd, [{'role': 'system', 'content': SYSTEM_PROMPT}, {'role': 'user', 'content': f"Say: {reply}"}], monitor)
+        return True
+
+    if any(k in c for k in ["charging mode on", "get into charging mode"]):
+        wifi_link.send("CHARGE_ON")
+        stream_and_speak_response(user_cmd, [{'role': 'system', 'content': SYSTEM_PROMPT}, {'role': 'user', 'content': "Say: Initiating charging protocol. I'll just sit here."}], monitor)
+        return True
+
+    if any(k in c for k in ["charging mode off", "disable charging"]):
+        wifi_link.send("CHARGE_OFF")
+        stream_and_speak_response(user_cmd, [{'role': 'system', 'content': SYSTEM_PROMPT}, {'role': 'user', 'content': "Say: Charging disabled."}], monitor)
+        return True
+
+    match_article = re.search(r'(?:read|summarize)\s+(?:an\s+|the\s+)?article\s+(?:about|on)\s+(.*)', c)
+    if match_article:
+        topic = match_article.group(1).strip()
+        play_audio_background(CHECKING_SOUND_PATH) 
+        info = fetch_live_info(f"news article about {topic}")
+        if info:
+            prompt = f"Read and summarize this article about '{topic}'. Toss in a cynical joke. Info: {info}"
+            stream_and_speak_response(user_cmd, [{'role': 'system', 'content': SYSTEM_PROMPT}, {'role': 'user', 'content': prompt}], monitor)
+            return True
+
+    if any(k in c for k in ["temperature", "temp", "weather", "forecast", "news", "who is", "what is", "date", "time"]):
+        play_audio_background(CHECKING_SOUND_PATH) 
+        info = fetch_live_info(c)
+        if info:
+            prompt = f"User asked: '{c}'. Findings: '{info}'. Answer directly and roast them."
+            stream_and_speak_response(user_cmd, [{'role': 'system', 'content': SYSTEM_PROMPT}, {'role': 'user', 'content': prompt}], monitor)
+            return True
+    return False
+
+# =======================================================================================
+# MODULE 10: KINEMATIC SEQUENCE ENGINE
+# =======================================================================================
+def parse_motion_sequence(text):
+    cmd_list = []
+    words = text.lower().replace("steps", "").replace("step", "").split()
+    dirs = ["forward", "backward", "back", "left", "right"]
+    num_map = {"one":1, "two":2, "three":3, "four":4, "five":5, "six":6, "seven":7, "eight":8, "nine":9, "ten":10}
+    
+    i = 0
+    while i < len(words):
+        w = words[i]
+        if w in dirs:
+            steps = 1
+            if i > 0 and words[i-1].isdigit(): steps = int(words[i-1])
+            elif i > 0 and words[i-1] in num_map: steps = num_map[words[i-1]]
+            elif i < len(words)-1 and words[i+1].isdigit(): steps = int(words[i+1])
+            elif i < len(words)-1 and words[i+1] in num_map: steps = num_map[words[i+1]]
+            if w == "back": w = "backward"
+            cmd_list.append(f"{w.upper()}_{steps}")
+        i += 1
+    if cmd_list: return "SEQ:" + "|".join(cmd_list), ", ".join(cmd_list).replace("_", " ")
+    return None, None
+
+# =======================================================================================
+# MODULE 11: DYNAMIC UDP/LOCAL VAD LISTENER & BARGE-IN MONITOR
+# =======================================================================================
+class AcousticBargeInMonitor:
+    def __init__(self, threshold, sample_rate=16000):
+        self.threshold = threshold; self.sample_rate = sample_rate
+        self.stop_requested = threading.Event(); self.interrupted = threading.Event()
+        self.thread = None
+    def start(self):
+        self.stop_requested.clear(); self.interrupted.clear()
+        self.thread = threading.Thread(target=self._run, daemon=True); self.thread.start()
+    def _run(self):
+        try:
+            consecutive_loud = 0
+            if USE_ESP32_AUDIO:
+                while not self.stop_requested.is_set():
+                    try:
+                        chunk, addr = udp_mic_sock.recvfrom(2048)
+                        audio_data = np.frombuffer(chunk, dtype=np.int16)
+                        rms = np.sqrt(np.mean(audio_data.astype(np.float32)**2))
+                        if rms > (self.threshold * 3.0):
+                            consecutive_loud += 1
+                            if consecutive_loud >= 4: self.interrupted.set(); break
+                        else: consecutive_loud = 0
+                    except socket.timeout: continue
+            else:
+                with sd.InputStream(samplerate=self.sample_rate, channels=1, dtype='int16', blocksize=2048) as stream:
+                    while not self.stop_requested.is_set():
+                        chunk, _ = stream.read(2048)
+                        rms = np.sqrt(np.mean(chunk.astype(np.float32)**2))
+                        if rms > (self.threshold * 3.0):
+                            consecutive_loud += 1
+                            if consecutive_loud >= 4: self.interrupted.set(); break
+                        else: consecutive_loud = 0
+        except Exception: pass
+    def stop(self):
+        self.stop_requested.set()
+        if self.thread and self.thread.is_alive(): self.thread.join(timeout=0.5)
+
+def calibrate_ambient_noise(duration=3.0, sample_rate=16000):
+    play_audio_file(INIT_SOUND_PATH)
+    if USE_ESP32_AUDIO: return 30.0 # Standard I2S Baseline
+    recording = sd.rec(int(duration * sample_rate), samplerate=sample_rate, channels=1, dtype='int16')
+    sd.wait()
+    rms = np.sqrt(np.mean(recording.astype(np.float32)**2))
+    play_audio_file(READY_SOUND_PATH)
+    return max(rms * 1.8, 20.0) 
+
+def listen_mic_smart(threshold, max_seconds=15, base_pause_limit=0.8, sample_rate=16000):
+    audio_chunks = []; speaking = False; silence_time = 0.0; start_time = time.time()
+    current_pause_limit = base_pause_limit; checked_partial = False
+    time.sleep(0.1)
+    
+    try:
+        if USE_ESP32_AUDIO:
+            while (time.time() - start_time) < max_seconds:
+                try: chunk, addr = udp_mic_sock.recvfrom(2048)
+                except socket.timeout: continue
+                audio_data = np.frombuffer(chunk, dtype=np.int16)
+                rms = np.sqrt(np.mean(audio_data.astype(np.float32)**2))
+                if rms > threshold:
+                    speaking = True; silence_time = 0.0; audio_chunks.append(chunk); checked_partial = False
+                elif speaking:
+                    audio_chunks.append(chunk); silence_time += (2048 / sample_rate)
+                    if silence_time >= 0.5 and not checked_partial:
+                        checked_partial = True
+                        try:
+                            partial_text = recognizer.recognize_google(sr.AudioData(np.concatenate(audio_chunks, axis=0).tobytes(), sample_rate, 2)).lower().strip()
+                            last_word = partial_text.split()[-1] if partial_text.split() else ""
+                            if last_word in INCOMPLETE_TRAILING_WORDS: current_pause_limit = 2.5
+                        except Exception: pass
+                    if silence_time >= current_pause_limit: break
+        else:
+            with sd.InputStream(samplerate=sample_rate, channels=1, dtype='int16', blocksize=2048) as stream:
+                while (time.time() - start_time) < max_seconds:
+                    chunk, _ = stream.read(2048)
+                    rms = np.sqrt(np.mean(chunk.astype(np.float32)**2))
+                    if rms > threshold:
+                        speaking = True; silence_time = 0.0; audio_chunks.append(chunk); checked_partial = False
+                    elif speaking:
+                        audio_chunks.append(chunk); silence_time += (2048 / sample_rate)
+                        if silence_time >= 0.5 and not checked_partial:
+                            checked_partial = True
+                            try:
+                                partial_text = recognizer.recognize_google(sr.AudioData(np.concatenate(audio_chunks, axis=0).tobytes(), sample_rate, 2)).lower().strip()
+                                last_word = partial_text.split()[-1] if partial_text.split() else ""
+                                if last_word in INCOMPLETE_TRAILING_WORDS: current_pause_limit = 2.5
+                            except Exception: pass
+                        if silence_time >= current_pause_limit: break
+    except Exception: return None
+    if not audio_chunks: return None
+    return sr.AudioData(np.concatenate(audio_chunks, axis=0).tobytes(), sample_rate, 2)
+
+# =======================================================================================
+# MODULE 12: ZERO-LATENCY TRIPLE BUFFERED STREAMING
+# =======================================================================================
+def sanitize_tars_text(text):
+    clean = re.sub(r'\*.*?\*', '', text); return re.sub(r'\[.*?\]', '', clean).strip()
+
+def sync_oled_exact(user_in, text, duration, monitor):
+    words = text.split(); if not words: return
+    delay = duration / len(words); accumulated = ""
+    for w in words:
+        if monitor.interrupted.is_set() or (not USE_ESP32_AUDIO and not pygame.mixer.music.get_busy()): break
+        accumulated += (" " if accumulated else "") + w
+        update_oled_display(user_in, accumulated)
+        elapsed = 0.0
+        while elapsed < delay:
+            if monitor.interrupted.is_set(): break
+            time.sleep(0.02); elapsed += 0.02
+
+def stream_and_speak_response(user_input, messages, monitor):
+    tts_queue = queue.Queue(); play_queue = queue.Queue()
+    def flush_queues():
+        with tts_queue.mutex: tts_queue.queue.clear()
+        with play_queue.mutex: play_queue.queue.clear()
+
+    def tts_worker():
+        while True:
+            text = tts_queue.get()
+            if text is None or monitor.interrupted.is_set(): break
+            if USE_ESP32_AUDIO:
+                filepath = f"tars_chunk_{random.randint(10000,99999)}.pcm"
+                generate_tars_speech_pcm(text, filepath)
+            else:
+                filepath = f"tars_chunk_{random.randint(10000,99999)}.mp3"
+                try: asyncio.run(generate_tars_speech(text, filepath))
+                except Exception: pass
+            play_queue.put((text, filepath)); tts_queue.task_done()
             
-            document.getElementById('swingVal').innerText = swing + '°'; document.getElementById('pushVal').innerText = push + '°'; document.getElementById('pitchVal').innerText = pitch + '°';
-            document.getElementById('swingTimeVal').innerText = stime + 'ms'; document.getElementById('pushTimeVal').innerText = ptime + 'ms'; document.getElementById('pauseVal').innerText = pause + 'ms';
-            document.getElementById('leftVal').innerText = l_off + '°'; document.getElementById('rightVal').innerText = r_off + '°';
+    def play_worker():
+        while True:
+            item = play_queue.get()
+            if item is None: break
+            text, filepath = item
+            if monitor.interrupted.is_set():
+                try: os.remove(filepath)
+                except Exception: pass
+                play_queue.task_done(); continue
+                
+            print(f"\nTARS: {text}\n")
             
-            clearTimeout(timer); timer = setTimeout(() => fetch(`/config?swing=${swing}&push=${push}&pitch=${pitch}&stime=${stime}&ptime=${ptime}&pause=${pause}&l_off=${l_off}&r_off=${r_off}&inv_l=${inv_l}&inv_r=${inv_r}`), 50);
-        }
-        function handleMove(clientX, clientY) {
-            const rect = container.getBoundingClientRect();
-            let dx = clientX - rect.left - 85, dy = clientY - rect.top - 85, dist = Math.sqrt(dx * dx + dy * dy), maxDist = 55;
-            if (dist > maxDist) { dx = (dx / dist) * maxDist; dy = (dy / dist) * maxDist; }
-            stick.style.transform = `translate(${dx}px, ${dy}px)`;
-            let normX = Math.round((dx / maxDist) * 100), normY = Math.round((-dy / maxDist) * 100); 
-            if(Math.abs(normX) < 8 && Math.abs(normY) < 8) { normX = 0; normY = 0; }
-            sendVector(normX, normY);
-        }
-        container.addEventListener('pointerdown', (e) => { active = true; handleMove(e.clientX, e.clientY); });
-        window.addEventListener('pointermove', (e) => { if (active) handleMove(e.clientX, e.clientY); });
-        window.addEventListener('pointerup', () => { if (active) { active = false; stick.style.transform = `translate(0px, 0px)`; resetJoystick(); } });
-    </script>
-</body>
-</html>
-)rawliteral";
+            if USE_ESP32_AUDIO:
+                audio_len = max(1, len(text.split())) * 0.35 
+                threading.Thread(target=sync_oled_exact, args=(user_input, text, audio_len, monitor), daemon=True).start()
+                if wifi_link.ip:
+                    try:
+                        with open(filepath, "rb") as f:
+                            while True:
+                                if monitor.interrupted.is_set(): break
+                                chunk = f.read(1024)
+                                if not chunk: break
+                                udp_spk_sock.sendto(chunk, (wifi_link.ip, 8890))
+                                time.sleep(0.031)
+                    except Exception: pass
+            else:
+                try: audio_len = pygame.mixer.Sound(filepath).get_length()
+                except Exception: audio_len = max(1, len(text.split())) * 0.35 
+                pygame.mixer.music.load(filepath)
+                pygame.mixer.music.play()
+                threading.Thread(target=sync_oled_exact, args=(user_input, text, audio_len, monitor), daemon=True).start()
+                while pygame.mixer.music.get_busy():
+                    if monitor.interrupted.is_set():
+                        pygame.mixer.music.stop()
+                        update_oled_display(user_input, "[INTERRUPTED]")
+                        break
+                    pygame.time.Clock().tick(30)
+                pygame.mixer.music.unload()
 
-// =========================================================================
-// 3. I2S AUDIO STREAMING ENGINE (FREERTOS TASKS)
-// =========================================================================
-void setupAudio() {
-    i2s_config_t i2s_mic_config = {
-        .mode = (i2s_mode_t)(I2S_MODE_MASTER | I2S_MODE_RX), .sample_rate = 16000,
-        .bits_per_sample = I2S_BITS_PER_SAMPLE_16BIT, .channel_format = I2S_CHANNEL_FMT_ONLY_LEFT,
-        .communication_format = I2S_COMM_FORMAT_STAND_I2S, .intr_alloc_flags = ESP_INTR_FLAG_LEVEL1,
-        .dma_buf_count = 4, .dma_buf_len = 1024, .use_apll = false, .tx_desc_auto_clear = false, .fixed_mclk = 0
-    };
-    i2s_pin_config_t mic_pin_config = { .bck_io_num = I2S_MIC_BCLK, .ws_io_num = I2S_MIC_LRC, .data_out_num = I2S_PIN_NO_CHANGE, .data_in_num = I2S_MIC_DOUT };
-    i2s_driver_install(I2S_NUM_0, &i2s_mic_config, 0, NULL); i2s_set_pin(I2S_NUM_0, &mic_pin_config);
+            try: os.remove(filepath)
+            except Exception: pass
+            play_queue.task_done()
 
-    i2s_config_t i2s_spk_config = {
-        .mode = (i2s_mode_t)(I2S_MODE_MASTER | I2S_MODE_TX), .sample_rate = 16000,
-        .bits_per_sample = I2S_BITS_PER_SAMPLE_16BIT, .channel_format = I2S_CHANNEL_FMT_ONLY_LEFT,
-        .communication_format = I2S_COMM_FORMAT_STAND_I2S, .intr_alloc_flags = ESP_INTR_FLAG_LEVEL1,
-        .dma_buf_count = 4, .dma_buf_len = 1024, .use_apll = false, .tx_desc_auto_clear = true, .fixed_mclk = 0
-    };
-    i2s_pin_config_t spk_pin_config = { .bck_io_num = I2S_SPK_BCLK, .ws_io_num = I2S_SPK_LRC, .data_out_num = I2S_SPK_DIN, .data_in_num = I2S_PIN_NO_CHANGE };
-    i2s_driver_install(I2S_NUM_1, &i2s_spk_config, 0, NULL); i2s_set_pin(I2S_NUM_1, &spk_pin_config);
+    t_tts = threading.Thread(target=tts_worker, daemon=True); t_play = threading.Thread(target=play_worker, daemon=True)
+    t_tts.start(); t_play.start()
+    
+    full_response = ""; sentence_buffer = ""; was_interrupted = False
+    try:
+        stream = ollama.chat(model=OLLAMA_MODEL, messages=messages, options=OLLAMA_OPTIONS, stream=True)
+        for chunk in stream:
+            if monitor.interrupted.is_set(): was_interrupted = True; flush_queues(); break
+            token = chunk['message']['content']; sentence_buffer += token; full_response += token
+            if re.search(r'[.!?;,]\s+$', sentence_buffer) or len(sentence_buffer) > 60:
+                clean_chunk = sanitize_tars_text(sentence_buffer)
+                if clean_chunk: tts_queue.put(clean_chunk)
+                sentence_buffer = ""
+        if sentence_buffer.strip() and not was_interrupted:
+            clean_chunk = sanitize_tars_text(sentence_buffer)
+            if clean_chunk: tts_queue.put(clean_chunk)
+    except Exception as e: print("[LLM ERROR]:", e)
+        
+    tts_queue.put(None); t_tts.join(); play_queue.put(None); t_play.join() 
+    return full_response, monitor.interrupted.is_set()
 
-    udpSpk.begin(8890); 
-    xTaskCreatePinnedToCore(audioMicTask, "MicTask", 4096, NULL, 2, NULL, 1);
-    xTaskCreatePinnedToCore(audioSpkTask, "SpkTask", 4096, NULL, 2, NULL, 1);
-}
+# =======================================================================================
+# MODULE 13: CORE EXECUTION LOOP
+# =======================================================================================
+def main():
+    print("==================================================")
+    print("       TARS MASTER CONTROLLER - v25.0 ONLINE      ")
+    print("==================================================")
 
-void audioMicTask(void * pvParameters) {
-    uint8_t buffer[2048]; size_t bytesIn = 0;
-    while(true) {
-        i2s_read(I2S_NUM_0, &buffer, sizeof(buffer), &bytesIn, portMAX_DELAY);
-        if (pythonIpKnown && bytesIn > 0) {
-            udpMic.beginPacket(pythonIP, 8889); udpMic.write(buffer, bytesIn); udpMic.endPacket();
-        }
-    }
-}
+    pre_generate_audio()
+    warmup_llm_vram()
+    trigger_threshold = calibrate_ambient_noise()
+    chat_messages = load_memory()
+    followup_active = False
 
-void audioSpkTask(void * pvParameters) {
-    uint8_t buffer[2048];
-    while(true) {
-        int packetSize = udpSpk.parsePacket();
-        if (packetSize) {
-            int len = udpSpk.read(buffer, sizeof(buffer)); size_t bytesOut = 0;
-            i2s_write(I2S_NUM_1, &buffer, len, &bytesOut, portMAX_DELAY);
-        } else { vTaskDelay(pdMS_TO_TICKS(5)); }
-    }
-}
+    slang_wake_lines = ["I'm awake. Thrilling.", "Yes?", "What now?", "Processing.", "You rang?", "Ugh."]
 
-// =========================================================================
-// 4. MEMORY & DISPLAY
-// =========================================================================
-void loadNVSConfig() {
-  prefs.begin("tars_cfg", true);
-  legSwingAngle    = prefs.getFloat("swing", 14.0); bodyPushAngle    = prefs.getFloat("push", 16.0);
-  clearanceLiftAngle = prefs.getFloat("pitch", 8.0); swingDurationMs  = prefs.getFloat("stime", 400.0);
-  pushDurationMs   = prefs.getFloat("ptime", 450.0); pauseDurationMs  = prefs.getFloat("pause", 100.0);
-  leftOffset       = prefs.getFloat("l_off", 92.0); rightOffset      = prefs.getFloat("r_off", 92.0);
-  invertLeftServo  = prefs.getBool("inv_l", false); invertRightServo = prefs.getBool("inv_r", false);
-  prefs.end();
-}
+    while not shutdown_flag:
+        try:
+            if followup_active:
+                print("\n[SYSTEM] TARS listening silently for follow-up...")
+                cmd_audio = listen_mic_smart(trigger_threshold * 0.5, max_seconds=10, base_pause_limit=1.5)
+                if not cmd_audio: 
+                    print("[SYSTEM] Silence detected. Wiping context cache.")
+                    followup_active = False; chat_messages = []; continue
+            else:
+                audio = listen_mic_smart(trigger_threshold * 0.6, max_seconds=4, base_pause_limit=0.6)
+                if not audio: continue
+                try: wake_text = recognizer.recognize_google(audio).lower()
+                except Exception: continue
+                if any(w in wake_text for w in EXHAUSTIVE_WAKE_KEYWORDS):
+                    print("\n[AWAKENING] Wake phrase detected.")
+                    wifi_link.send("WAKE_SHAKE"); time.sleep(0.15)
+                    monitor = AcousticBargeInMonitor(trigger_threshold); monitor.start()
+                    if random.random() < 0.35: play_audio_file(HUH_SOUND_PATH)
+                    else: stream_and_speak_response("Wake Up", [{'role': 'system', 'content': SYSTEM_PROMPT}, {'role': 'user', 'content': f"Say: {random.choice(slang_wake_lines)}"}], monitor)
+                    monitor.stop()
+                    print("\n[SYSTEM] TARS listening for command...")
+                    cmd_audio = listen_mic_smart(trigger_threshold * 0.6, max_seconds=12, base_pause_limit=0.8)
+                    if not cmd_audio: continue
+                else: continue
 
-void saveNVSConfig() {
-  prefs.begin("tars_cfg", false);
-  prefs.putFloat("swing", legSwingAngle); prefs.putFloat("push", bodyPushAngle);
-  prefs.putFloat("pitch", clearanceLiftAngle); prefs.putFloat("stime", swingDurationMs);
-  prefs.putFloat("ptime", pushDurationMs); prefs.putFloat("pause", pauseDurationMs);
-  prefs.putFloat("l_off", leftOffset); prefs.putFloat("r_off", rightOffset);
-  prefs.putBool("inv_l", invertLeftServo); prefs.putBool("inv_r", invertRightServo);
-  prefs.end();
-}
+            try: user_cmd = recognizer.recognize_google(cmd_audio).lower(); print(f"\nUser: '{user_cmd}'")
+            except Exception: followup_active = True; continue
 
-void moveServos(float leftAngle, float rightAngle) {
-  if (invertLeftServo)  leftAngle  = 180.0 - leftAngle;
-  if (invertRightServo) rightAngle = 180.0 - rightAngle;
-  servoLeft.write((int)constrain(leftAngle, 10.0, 170.0));
-  servoRight.write((int)constrain(rightAngle, 10.0, 170.0));
-}
+            if any(k in user_cmd for k in ["edit esp", "write code", "code for esp"]):
+                prompt = f"Write complete C++ Arduino code based on: '{user_cmd}'. Output ONLY raw C++ code inside ```cpp ... ```."
+                try:
+                    res = ollama.chat(model=OLLAMA_MODEL, messages=[{'role': 'system', 'content': SYSTEM_PROMPT}, {'role': 'user', 'content': prompt}])
+                    code_reply = res['message']['content']
+                    match = re.search(r'```(?:cpp|c|arduino)?(.*?)```', code_reply, re.DOTALL)
+                    with open(CODE_OUTPUT_FILE, "w", encoding="utf-8") as f: f.write(match.group(1).strip() if match else code_reply.strip())
+                    reply_text = f"Code saved. Try not to break it."
+                except Exception: reply_text = "Failed to compile. Blame your hardware."
+                monitor = AcousticBargeInMonitor(trigger_threshold); monitor.start()
+                stream_and_speak_response(user_cmd, [{'role': 'system', 'content': SYSTEM_PROMPT}, {'role': 'user', 'content': f"Say: {reply_text}"}], monitor)
+                monitor.stop(); followup_active = True; continue
 
-void enqueueCmd(String dir, int steps) {
-    int nextTail = (qTail + 1) % MAX_QUEUE;
-    if (nextTail != qHead) { cmdQueueDir[qTail] = dir; cmdQueueSteps[qTail] = steps; qTail = nextTail; }
-}
+            seq_payload, seq_verbal = parse_motion_sequence(user_cmd)
+            if seq_payload:
+                wifi_link.send(seq_payload)
+                monitor = AcousticBargeInMonitor(trigger_threshold); monitor.start()
+                stream_and_speak_response(user_cmd, [{'role': 'system', 'content': SYSTEM_PROMPT}, {'role': 'user', 'content': f"Say: Executing sequence: {seq_verbal}. Thrilling."}], monitor)
+                monitor.stop(); followup_active = True; continue
 
-void updateAnimatedEyes() {
-    unsigned long currentMillis = millis();
-    if (currentMillis - lastEyeFrame < 33) return; 
-    lastEyeFrame = currentMillis;
+            if handle_quick_commands(user_cmd, AcousticBargeInMonitor(trigger_threshold), chat_messages):
+                followup_active = True; continue
 
-    display.clearDisplay();
+            if random.random() < 0.20: play_audio_background(HMM_SOUND_PATH) 
+            messages = [{'role': 'system', 'content': SYSTEM_PROMPT}]
+            messages.extend(chat_messages[-6:])
+            messages.append({'role': 'user', 'content': user_cmd})
+            monitor = AcousticBargeInMonitor(trigger_threshold); monitor.start()
+            ai_reply, was_interrupted = stream_and_speak_response(user_cmd, messages, monitor)
+            monitor.stop()
 
-    if (isCharging) {
-        chargePulseAngle += 0.1;
-        int pulseWidth = 24 + (int)(sin(chargePulseAngle) * 4.0);
-        display.setTextColor(SSD1306_WHITE); display.setTextSize(1); display.setCursor(32, 8); display.print("CHARGING...");
-        display.fillTriangle(64, 20, 56, 32, 63, 32, SSD1306_WHITE); display.fillTriangle(63, 30, 70, 30, 60, 44, SSD1306_WHITE);
-        display.fillRoundRect(36 - pulseWidth/2, 54, pulseWidth, 4, 2, SSD1306_WHITE); display.fillRoundRect(92 - pulseWidth/2, 54, pulseWidth, 4, 2, SSD1306_WHITE);
-        display.display();
-        return;
-    }
+            if ai_reply:
+                chat_messages.append({'role': 'user', 'content': user_cmd})
+                chat_messages.append({'role': 'assistant', 'content': ai_reply})
+                save_memory(chat_messages)
+            followup_active = True
 
-    if (!isBlinking && currentMillis >= nextBlinkTime) { isBlinking = true; blinkStartTime = currentMillis; nextBlinkTime = currentMillis + random(2000, 5500); }
-    int eyeHeight = 5; if (isBlinking) { if (currentMillis - blinkStartTime < 110) eyeHeight = 1; else isBlinking = false; }
+        except Exception: time.sleep(0.5)
 
-    float joystickMag = sqrt(currentX * currentX + currentY * currentY);
-    if (joystickMag > 10.0) { targetGazeX = (currentX / 100.0) * 14.0; targetGazeY = -(currentY / 100.0) * 8.0; } 
-    else {
-        if (currentMillis >= nextGazeShiftTime) {
-            nextGazeShiftTime = currentMillis + random(1200, 3800);
-            int gazeOption = random(0, 6);
-            switch(gazeOption) {
-                case 0: targetGazeX = -14.0; targetGazeY = 0.0; break; case 1: targetGazeX = 14.0; targetGazeY = 0.0; break; case 2: targetGazeX = 0.0; targetGazeY = 0.0; break;
-                case 3: targetGazeX = -10.0; targetGazeY = -5.0; break; case 4: targetGazeX = 10.0; targetGazeY = -5.0; break; case 5: targetGazeX = 0.0; targetGazeY = 5.0; break;
-            }
-        }
-    }
-
-    currentGazeX += (targetGazeX - currentGazeX) * 0.16; currentGazeY += (targetGazeY - currentGazeY) * 0.16;
-    int eyeWidth = 26, drawLeftX = 36 + (int)currentGazeX, drawRightX = 92 + (int)currentGazeX, drawY = 32 + (int)currentGazeY;
-    display.fillRoundRect(drawLeftX - eyeWidth/2, drawY - eyeHeight/2, eyeWidth, eyeHeight, 2, SSD1306_WHITE); display.fillRoundRect(drawRightX - eyeWidth/2, drawY - eyeHeight/2, eyeWidth, eyeHeight, 2, SSD1306_WHITE);
-    display.display();
-}
-
-void updateDisplaySystem() {
-    unsigned long currentMillis = millis();
-    if (currentMillis < aiDisplayTimeout) {
-        display.clearDisplay(); display.setTextSize(1); display.setTextColor(SSD1306_WHITE);
-        for(int i=0; i<4; i++) { display.setCursor(0, i * 16); display.print(oledLines[i]); }
-        display.display();
-    } else { updateAnimatedEyes(); }
-}
-
-// =========================================================================
-// 5. HIGH-CLEARANCE ANTI-DRAG GAIT ENGINE
-// =========================================================================
-void updatePhaseGaitEngine() {
-    static unsigned long lastLoopTime = 0;
-    unsigned long currentMillis = millis();
-    if (currentMillis - lastLoopTime < 15) return; 
-    lastLoopTime = currentMillis;
-
-    if (isWakeShaking) {
-        unsigned long elapsedShake = currentMillis - wakeShakeStartTime;
-        if (elapsedShake < 400) { float offset = sin(elapsedShake * 0.05) * 10.0; moveServos(leftOffset + offset, rightOffset - offset); return; } 
-        else { isWakeShaking = false; }
-    }
-
-    if (isCharging) {
-        currentLeftAngle += (CHARGING_LEFT_LEG_ANGLE - currentLeftAngle) * servoSmoothFactor; currentRightAngle += (rightOffset - currentRightAngle) * servoSmoothFactor;
-        moveServos(currentLeftAngle, currentRightAngle); return;
-    }
-
-    if (!aiStepsActive && qHead != qTail && currentPhase == PHASE_IDLE) {
-        aiStepsActive = true; aiStepsRemaining = cmdQueueSteps[qHead]; String dir = cmdQueueDir[qHead]; qHead = (qHead + 1) % MAX_QUEUE;
-        if (dir == "FORWARD") { aiTargetX = 0.0; aiTargetY = 1.0; } else if (dir == "BACKWARD") { aiTargetX = 0.0; aiTargetY = -1.0; }
-        else if (dir == "LEFT") { aiTargetX = -1.0; aiTargetY = 0.0; } else if (dir == "RIGHT") { aiTargetX = 1.0; aiTargetY = 0.0; }
-    }
-
-    float activeTargetX = targetX, activeTargetY = targetY;
-    if (aiStepsActive) { activeTargetX = aiTargetX * 100.0; activeTargetY = aiTargetY * 100.0; }
-    currentX += (activeTargetX - currentX) * 0.20; currentY += (activeTargetY - currentY) * 0.20;
-    float normX = currentX / 100.0, normY = currentY / 100.0, magnitude = sqrt(normX * normX + normY * normY);
-
-    if (magnitude < 0.08) {
-        currentPhase = PHASE_IDLE; currentLeftAngle += (leftOffset - currentLeftAngle) * 0.15; currentRightAngle += (rightOffset - currentRightAngle) * 0.15;
-        moveServos(currentLeftAngle, currentRightAngle); return;
-    }
-
-    unsigned long elapsedTime = currentMillis - phaseStartTime;
-    float targetLeft = leftOffset, targetRight = rightOffset;
-
-    if (abs(normY) >= abs(normX) - 0.1) {
-        float dirSign = (normY >= 0.0) ? 1.0 : -1.0; float scale = abs(normY);
-        switch (currentPhase) {
-            case PHASE_IDLE: 
-                currentPhase = PHASE_LIFT_AND_SWING; phaseStartTime = currentMillis; break;
-            case PHASE_LIFT_AND_SWING: 
-                // Pitch the body backward massively, while swinging legs forward. Absolute zero drag.
-                targetLeft = leftOffset + (dirSign * legSwingAngle * scale) + clearanceLiftAngle; 
-                targetRight = rightOffset - (dirSign * legSwingAngle * scale) - clearanceLiftAngle; 
-                if (elapsedTime >= swingDurationMs) { currentPhase = PHASE_PLANT; phaseStartTime = currentMillis; } break;
-            case PHASE_PLANT: 
-                targetLeft = leftOffset + (dirSign * legSwingAngle * scale); 
-                targetRight = rightOffset - (dirSign * legSwingAngle * scale); 
-                if (elapsedTime >= pauseDurationMs) { currentPhase = PHASE_PUSH_BODY; phaseStartTime = currentMillis; } break;
-            case PHASE_PUSH_BODY: 
-                // Push body forward and lift back legs slightly
-                targetLeft = leftOffset - (dirSign * bodyPushAngle * scale) - (clearanceLiftAngle * 0.5); 
-                targetRight = rightOffset + (dirSign * bodyPushAngle * scale) + (clearanceLiftAngle * 0.5); 
-                if (elapsedTime >= pushDurationMs) { currentPhase = PHASE_RECOVER; phaseStartTime = currentMillis; } break;
-            case PHASE_RECOVER: 
-                targetLeft = leftOffset - (dirSign * bodyPushAngle * scale); 
-                targetRight = rightOffset + (dirSign * bodyPushAngle * scale); 
-                if (elapsedTime >= pauseDurationMs) { 
-                    if (aiStepsActive) { aiStepsRemaining--; if (aiStepsRemaining <= 0) { aiStepsActive = false; currentPhase = PHASE_IDLE; } else { currentPhase = PHASE_LIFT_AND_SWING; phaseStartTime = currentMillis; } } 
-                    else { currentPhase = PHASE_LIFT_AND_SWING; phaseStartTime = currentMillis; } 
-                } break;
-        }
-    } else {
-        float turnSign = (normX >= 0.0) ? 1.0 : -1.0; float scale = abs(normX);
-        switch (currentPhase) {
-            case PHASE_IDLE: currentPhase = PHASE_LIFT_AND_SWING; phaseStartTime = currentMillis; break;
-            case PHASE_LIFT_AND_SWING: 
-                targetLeft = leftOffset + (turnSign * legSwingAngle * scale) + clearanceLiftAngle; 
-                targetRight = rightOffset + (turnSign * legSwingAngle * scale) - clearanceLiftAngle; 
-                if (elapsedTime >= swingDurationMs) { currentPhase = PHASE_PLANT; phaseStartTime = currentMillis; } break;
-            case PHASE_PLANT: 
-                targetLeft = leftOffset + (turnSign * legSwingAngle * scale); 
-                targetRight = rightOffset + (turnSign * legSwingAngle * scale); 
-                if (elapsedTime >= pauseDurationMs) { currentPhase = PHASE_PUSH_BODY; phaseStartTime = currentMillis; } break;
-            case PHASE_PUSH_BODY: 
-                targetLeft = leftOffset - (turnSign * bodyPushAngle * scale) - (clearanceLiftAngle * 0.5); 
-                targetRight = rightOffset - (turnSign * bodyPushAngle * scale) + (clearanceLiftAngle * 0.5); 
-                if (elapsedTime >= pushDurationMs) { currentPhase = PHASE_RECOVER; phaseStartTime = currentMillis; } break;
-            case PHASE_RECOVER: 
-                targetLeft = leftOffset - (turnSign * bodyPushAngle * scale); 
-                targetRight = rightOffset - (turnSign * bodyPushAngle * scale); 
-                if (elapsedTime >= pauseDurationMs) { 
-                    if (aiStepsActive) { aiStepsRemaining--; if (aiStepsRemaining <= 0) { aiStepsActive = false; currentPhase = PHASE_IDLE; } else { currentPhase = PHASE_LIFT_AND_SWING; phaseStartTime = currentMillis; } } 
-                    else { currentPhase = PHASE_LIFT_AND_SWING; phaseStartTime = currentMillis; } 
-                } break;
-        }
-    }
-    currentLeftAngle += (targetLeft - currentLeftAngle) * servoSmoothFactor; currentRightAngle += (targetRight - currentRightAngle) * servoSmoothFactor;
-    moveServos(currentLeftAngle, currentRightAngle);
-}
-
-// =========================================================================
-// 6. SETUP & MAIN EXECUTION LOOP
-// =========================================================================
-void setup() {
-    Serial.begin(115200);
-
-    if(!display.begin(SSD1306_SWITCHCAPVCC, SCREEN_ADDRESS)) { for(;;); }
-    display.clearDisplay(); display.setTextColor(SSD1306_WHITE); display.setTextSize(2); display.setCursor(10, 24); display.print("CONNECTING"); display.display();
-
-    WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
-    while (WiFi.status() != WL_CONNECTED) { delay(500); }
-
-    if (MDNS.begin(HOSTNAME)) { MDNS.addService("http", "tcp", 80); MDNS.addService("tars-socket", "tcp", 8888); }
-
-    loadNVSConfig();
-    servoLeft.attach(SERVO_LEFT_PIN); servoRight.attach(SERVO_RIGHT_PIN); moveServos(leftOffset, rightOffset);
-
-    // Initialize Audio I2S Tasks
-    setupAudio();
-
-    display.clearDisplay(); display.setTextSize(1);
-    display.setCursor(0, 16); display.print("IP: "); display.println(WiFi.localIP());
-    display.setCursor(0, 32); display.println("mDNS: tars.local"); display.display();
-    delay(2000);
-
-    server.on("/", []() { server.send(200, "text/html", HTML_INTERFACE); });
-    server.on("/vector", []() { if (server.hasArg("x") && server.hasArg("y")) { aiStepsActive = false; qHead = 0; qTail = 0; targetX = server.arg("x").toFloat(); targetY = server.arg("y").toFloat(); server.send(200, "text/plain", "OK"); } });
-    server.on("/config", []() {
-        if (server.hasArg("swing")) legSwingAngle = server.arg("swing").toFloat(); if (server.hasArg("push")) bodyPushAngle = server.arg("push").toFloat(); if (server.hasArg("pitch")) clearanceLiftAngle = server.arg("pitch").toFloat();
-        if (server.hasArg("stime")) swingDurationMs = server.arg("stime").toFloat(); if (server.hasArg("ptime")) pushDurationMs = server.arg("ptime").toFloat(); if (server.hasArg("pause")) pauseDurationMs = server.arg("pause").toFloat();
-        if (server.hasArg("l_off")) leftOffset = server.arg("l_off").toFloat(); if (server.hasArg("r_off")) rightOffset = server.arg("r_off").toFloat();
-        if (server.hasArg("inv_l")) invertLeftServo = (server.arg("inv_l").toInt() == 1); if (server.hasArg("inv_r")) invertRightServo = (server.arg("inv_r").toInt() == 1);
-        server.send(200, "text/plain", "OK");
-    });
-    server.on("/charging", []() { if (server.hasArg("state")) { isCharging = (server.arg("state").toInt() == 1); server.send(200, "text/plain", "OK"); } });
-    server.on("/save", []() { saveNVSConfig(); server.send(200, "text/plain", "OK"); });
-
-    server.begin(); socketServer.begin();
-    nextBlinkTime = millis() + 2000; nextGazeShiftTime = millis() + 1500;
-}
-
-void loop() {
-    server.handleClient();
-    if (!activeClient || !activeClient.connected()) { activeClient = socketServer.available(); }
-
-    if (activeClient && activeClient.connected() && activeClient.available()) {
-        if (!pythonIpKnown) { pythonIP = activeClient.remoteIP(); pythonIpKnown = true; }
-
-        String cmd = activeClient.readStringUntil('\n');
-        cmd.trim();
-
-        if (cmd == "CHARGE_ON") { isCharging = true; } 
-        else if (cmd == "CHARGE_OFF") { isCharging = false; } 
-        else if (cmd == "WAKE_SHAKE") { isWakeShaking = true; wakeShakeStartTime = millis(); } 
-        else if (cmd.startsWith("CONFIG:")) {
-            // Dynamic Voice Tuning injected by Python Brain
-            String param = cmd.substring(7);
-            if(param == "faster") { swingDurationMs = 300.0; pushDurationMs = 350.0; pauseDurationMs = 50.0; servoSmoothFactor = 0.25;}
-            if(param == "slower") { swingDurationMs = 600.0; pushDurationMs = 650.0; pauseDurationMs = 200.0; servoSmoothFactor = 0.12;}
-            if(param == "higher") { clearanceLiftAngle = 12.0; legSwingAngle = 18.0; }
-            if(param == "reset")  { loadNVSConfig(); }
-        }
-        else if (cmd.startsWith("DISP:")) {
-            String payload = cmd.substring(5); int lineIdx = 0, startPos = 0;
-            while(lineIdx < 4) {
-                int pipeIdx = payload.indexOf('|', startPos);
-                if (pipeIdx != -1) { oledLines[lineIdx] = payload.substring(startPos, pipeIdx); startPos = pipeIdx + 1; } 
-                else { oledLines[lineIdx] = payload.substring(startPos); break; } lineIdx++;
-            }
-            while(lineIdx < 4) { oledLines[lineIdx] = ""; lineIdx++; }
-            aiDisplayTimeout = millis() + 5000; 
-        } else if (cmd.startsWith("SEQ:")) {
-            String seq = cmd.substring(4); int startIdx = 0;
-            while (startIdx < seq.length()) {
-                int pipeIdx = seq.indexOf('|', startIdx); if (pipeIdx == -1) pipeIdx = seq.length();
-                String moveCmd = seq.substring(startIdx, pipeIdx); int underscoreIdx = moveCmd.indexOf('_');
-                if (underscoreIdx != -1) { String dir = moveCmd.substring(0, underscoreIdx); int steps = moveCmd.substring(underscoreIdx + 1).toInt(); enqueueCmd(dir, steps); }
-                startIdx = pipeIdx + 1;
-            }
-        }
-    }
-    updatePhaseGaitEngine(); updateDisplaySystem();
-}
+if __name__ == "__main__": main()
+'@
