@@ -1,6 +1,6 @@
 /*
 =========================================================================================
-TARS TITAN FIRMWARE - v25.0 (WITH I2S AUDIO STREAMING)
+TARS TITAN FIRMWARE - v27.0 (AUTONOMOUS ON-BOARD I2S AUDIO & KINEMATICS)
 =========================================================================================
 */
 #include <WiFi.h>
@@ -17,8 +17,8 @@ TARS TITAN FIRMWARE - v25.0 (WITH I2S AUDIO STREAMING)
 // =========================================================================
 // 1. NETWORK & HARDWARE CONFIGURATION
 // =========================================================================
-const char* WIFI_SSID     = "YOUR_WIFI_SSID";     
-const char* WIFI_PASSWORD = "YOUR_WIFI_PASSWORD"; 
+const char* WIFI_SSID     = "YOUR_WIFI_SSID";     // <-- Enter your Wi-Fi
+const char* WIFI_PASSWORD = "YOUR_WIFI_PASSWORD"; // <-- Enter your Password
 const char* HOSTNAME      = "tars";               
 
 #define SERVO_LEFT_PIN  18
@@ -45,6 +45,7 @@ WebServer server(80);
 WiFiServer socketServer(8888); 
 WiFiClient activeClient;
 
+// --- UDP Audio Streaming ---
 WiFiUDP udpMic;
 WiFiUDP udpSpk;
 IPAddress pythonIP;
@@ -56,14 +57,14 @@ float rightOffset       = 92.0;
 bool invertLeftServo    = false;
 bool invertRightServo   = false;
 
-// --- Gait Parameters ---
-float legSwingAngle     = 5.0;   
-float bodyPushAngle     = 19.0;  
-float pitchLiftAngle    = 1.0;   
-float swingDurationMs   = 560.0; 
-float pushDurationMs    = 620.0; 
-float pauseDurationMs   = 250.0; 
-float servoSmoothFactor = 0.10;  
+// --- High-Clearance Gait Parameters ---
+float legSwingAngle     = 14.0;  
+float bodyPushAngle     = 16.0;  
+float clearanceLiftAngle= 8.0;   
+float swingDurationMs   = 400.0; 
+float pushDurationMs    = 450.0; 
+float pauseDurationMs   = 100.0; 
+float servoSmoothFactor = 0.18;  
 
 // --- Modes & States ---
 bool isCharging = false;
@@ -72,7 +73,7 @@ const float CHARGING_LEFT_LEG_ANGLE = 165.0;
 float targetX = 0.0, targetY = 0.0;
 float currentX = 0.0, currentY = 0.0;
 
-#define MAX_QUEUE 10
+#define MAX_QUEUE 15
 String cmdQueueDir[MAX_QUEUE];
 int cmdQueueSteps[MAX_QUEUE];
 int qHead = 0, qTail = 0;
@@ -81,6 +82,7 @@ bool aiStepsActive = false;
 int aiStepsRemaining = 0;
 float aiTargetX = 0.0, aiTargetY = 0.0;
 
+// --- Smooth Wake Shake Variables ---
 bool isWakeShaking = false;
 unsigned long wakeShakeStartTime = 0;
 
@@ -90,7 +92,7 @@ unsigned long aiDisplayTimeout = 0;
 float currentLeftAngle  = 92.0;
 float currentRightAngle = 92.0;
 
-enum GaitPhase { PHASE_IDLE, PHASE_SWING_LEGS_FORWARD, PHASE_PLANT_LEGS, PHASE_PUSH_BODY_FORWARD, PHASE_PLANT_BODY };
+enum GaitPhase { PHASE_IDLE, PHASE_LIFT_AND_SWING, PHASE_PLANT, PHASE_PUSH_BODY, PHASE_RECOVER };
 GaitPhase currentPhase = PHASE_IDLE;
 unsigned long phaseStartTime = 0;
 
@@ -104,7 +106,7 @@ unsigned long nextGazeShiftTime = 0;
 float chargePulseAngle = 0.0;
 
 // =========================================================================
-// 2. MOBILE WEB DASHBOARD
+// 2. MOBILE WEB DASHBOARD (PROGMEM HTML)
 // =========================================================================
 const char HTML_INTERFACE[] PROGMEM = R"rawliteral(
 <!DOCTYPE html>
@@ -134,17 +136,17 @@ const char HTML_INTERFACE[] PROGMEM = R"rawliteral(
 </head>
 <body>
     <h1>TARS</h1>
-    <div class="subtitle">KINEMATIC CONTROL SYSTEM</div>
+    <div class="subtitle">AUTONOMOUS FIRMWARE V27</div>
     <div class="card" style="text-align: center;"><h3>SYSTEM MODES</h3><button id="chargeBtn" class="btn btn-charge" onclick="toggleCharging()">TOGGLE CHARGING MODE</button></div>
     <div class="card" style="text-align: center;"><h3>JOYSTICK CONTROL</h3><div id="joystick-container"><div id="stick"></div></div><button class="btn" onclick="resetJoystick()">EMERGENCY STOP</button></div>
     <div class="card">
         <h3>GAIT & TIMING TUNER</h3>
-        <div class="slider-container"><label>LEG SWING ANGLE <span id="swingVal" class="value-display">5&deg;</span></label><input type="range" min="5" max="45" value="5" class="slider slider-highlight" id="swingSlider" oninput="updateConfig()"></div>
-        <div class="slider-container"><label>BODY PUSH ANGLE <span id="pushVal" class="value-display">19&deg;</span></label><input type="range" min="5" max="45" value="19" class="slider slider-highlight" id="pushSlider" oninput="updateConfig()"></div>
-        <div class="slider-container"><label>PITCH LIFT ANGLE <span id="pitchVal" class="value-display">1&deg;</span></label><input type="range" min="0" max="30" value="1" class="slider" id="pitchSlider" oninput="updateConfig()"></div>
-        <div class="slider-container"><label>SWING DURATION <span id="swingTimeVal" class="value-display">560ms</span></label><input type="range" min="100" max="800" step="10" value="560" class="slider" id="swingTimeSlider" oninput="updateConfig()"></div>
-        <div class="slider-container"><label>PUSH DURATION <span id="pushTimeVal" class="value-display">620ms</span></label><input type="range" min="100" max="1000" step="10" value="620" class="slider" id="pushTimeSlider" oninput="updateConfig()"></div>
-        <div class="slider-container"><label>TRANSITION PAUSE <span id="pauseVal" class="value-display">250ms</span></label><input type="range" min="20" max="500" step="10" value="250" class="slider" id="pauseSlider" oninput="updateConfig()"></div>
+        <div class="slider-container"><label>LEG SWING STRIDE <span id="swingVal" class="value-display">14&deg;</span></label><input type="range" min="5" max="45" value="14" class="slider slider-highlight" id="swingSlider" oninput="updateConfig()"></div>
+        <div class="slider-container"><label>BODY PUSH THRUST <span id="pushVal" class="value-display">16&deg;</span></label><input type="range" min="5" max="45" value="16" class="slider slider-highlight" id="pushSlider" oninput="updateConfig()"></div>
+        <div class="slider-container"><label>CLEARANCE LIFT <span id="pitchVal" class="value-display">8&deg;</span></label><input type="range" min="0" max="30" value="8" class="slider" id="pitchSlider" oninput="updateConfig()"></div>
+        <div class="slider-container"><label>SWING DURATION <span id="swingTimeVal" class="value-display">400ms</span></label><input type="range" min="100" max="800" step="10" value="400" class="slider" id="swingTimeSlider" oninput="updateConfig()"></div>
+        <div class="slider-container"><label>PUSH DURATION <span id="pushTimeVal" class="value-display">450ms</span></label><input type="range" min="100" max="1000" step="10" value="450" class="slider" id="pushTimeSlider" oninput="updateConfig()"></div>
+        <div class="slider-container"><label>TRANSITION PAUSE <span id="pauseVal" class="value-display">100ms</span></label><input type="range" min="20" max="500" step="10" value="100" class="slider" id="pauseSlider" oninput="updateConfig()"></div>
     </div>
     <div class="card">
         <h3>SERVO TRIM & INVERSION</h3>
@@ -197,10 +199,10 @@ const char HTML_INTERFACE[] PROGMEM = R"rawliteral(
 )rawliteral";
 
 // =========================================================================
-// 3. I2S AUDIO STREAMING ENGINE (FREERTOS TASKS)
+// 3. I2S AUDIO STREAMING ENGINE (FREERTOS CORE 1 TASKS)
 // =========================================================================
 void setupAudio() {
-    // Microphone (RX) Configuration
+    // Microphone (INMP441 - RX) Configuration
     i2s_config_t i2s_mic_config = {
         .mode = (i2s_mode_t)(I2S_MODE_MASTER | I2S_MODE_RX),
         .sample_rate = 16000,
@@ -208,8 +210,8 @@ void setupAudio() {
         .channel_format = I2S_CHANNEL_FMT_ONLY_LEFT,
         .communication_format = I2S_COMM_FORMAT_STAND_I2S,
         .intr_alloc_flags = ESP_INTR_FLAG_LEVEL1,
-        .dma_buf_count = 4,
-        .dma_buf_len = 1024,
+        .dma_buf_count = 8,
+        .dma_buf_len = 512,
         .use_apll = false,
         .tx_desc_auto_clear = false,
         .fixed_mclk = 0
@@ -223,7 +225,7 @@ void setupAudio() {
     i2s_driver_install(I2S_NUM_0, &i2s_mic_config, 0, NULL);
     i2s_set_pin(I2S_NUM_0, &mic_pin_config);
 
-    // Speaker (TX) Configuration
+    // Speaker (MAX98357A - TX) Configuration
     i2s_config_t i2s_spk_config = {
         .mode = (i2s_mode_t)(I2S_MODE_MASTER | I2S_MODE_TX),
         .sample_rate = 16000,
@@ -231,8 +233,8 @@ void setupAudio() {
         .channel_format = I2S_CHANNEL_FMT_ONLY_LEFT,
         .communication_format = I2S_COMM_FORMAT_STAND_I2S,
         .intr_alloc_flags = ESP_INTR_FLAG_LEVEL1,
-        .dma_buf_count = 4,
-        .dma_buf_len = 1024,
+        .dma_buf_count = 8,
+        .dma_buf_len = 512,
         .use_apll = false,
         .tx_desc_auto_clear = true,
         .fixed_mclk = 0
@@ -246,35 +248,40 @@ void setupAudio() {
     i2s_driver_install(I2S_NUM_1, &i2s_spk_config, 0, NULL);
     i2s_set_pin(I2S_NUM_1, &spk_pin_config);
 
-    udpSpk.begin(8890); // Listen for TTS Audio from Python
+    // Start UDP Listeners on Audio Ports
+    udpMic.begin(8889);
+    udpSpk.begin(8890); 
 
-    xTaskCreatePinnedToCore(audioMicTask, "MicTask", 4096, NULL, 2, NULL, 1);
-    xTaskCreatePinnedToCore(audioSpkTask, "SpkTask", 4096, NULL, 2, NULL, 1);
+    // Pin Audio Processing heavily to Core 1 to prevent interrupting Wi-Fi/Kinematics on Core 0
+    xTaskCreatePinnedToCore(audioMicTask, "MicTask", 4096, NULL, 3, NULL, 1);
+    xTaskCreatePinnedToCore(audioSpkTask, "SpkTask", 4096, NULL, 3, NULL, 1);
 }
 
 void audioMicTask(void * pvParameters) {
-    uint8_t buffer[2048];
+    uint8_t buffer[1024]; 
     size_t bytesIn = 0;
     while(true) {
         i2s_read(I2S_NUM_0, &buffer, sizeof(buffer), &bytesIn, portMAX_DELAY);
+        // Only broadcast microphone data if we know where the Python Brain is
         if (pythonIpKnown && bytesIn > 0) {
-            udpMic.beginPacket(pythonIP, 8889);
-            udpMic.write(buffer, bytesIn);
+            udpMic.beginPacket(pythonIP, 8889); 
+            udpMic.write(buffer, bytesIn); 
             udpMic.endPacket();
         }
+        vTaskDelay(pdMS_TO_TICKS(1)); // Watchdog yield
     }
 }
 
 void audioSpkTask(void * pvParameters) {
-    uint8_t buffer[2048];
+    uint8_t buffer[1024];
     while(true) {
         int packetSize = udpSpk.parsePacket();
         if (packetSize) {
-            int len = udpSpk.read(buffer, sizeof(buffer));
+            int len = udpSpk.read(buffer, sizeof(buffer)); 
             size_t bytesOut = 0;
             i2s_write(I2S_NUM_1, &buffer, len, &bytesOut, portMAX_DELAY);
-        } else {
-            vTaskDelay(pdMS_TO_TICKS(5)); // Prevent CPU hogging if no audio
+        } else { 
+            vTaskDelay(pdMS_TO_TICKS(5)); // Rest CPU if no audio is streaming
         }
     }
 }
@@ -284,9 +291,9 @@ void audioSpkTask(void * pvParameters) {
 // =========================================================================
 void loadNVSConfig() {
   prefs.begin("tars_cfg", true);
-  legSwingAngle    = prefs.getFloat("swing", 5.0); bodyPushAngle    = prefs.getFloat("push", 19.0);
-  pitchLiftAngle   = prefs.getFloat("pitch", 1.0); swingDurationMs  = prefs.getFloat("stime", 560.0);
-  pushDurationMs   = prefs.getFloat("ptime", 620.0); pauseDurationMs  = prefs.getFloat("pause", 250.0);
+  legSwingAngle    = prefs.getFloat("swing", 14.0); bodyPushAngle    = prefs.getFloat("push", 16.0);
+  clearanceLiftAngle = prefs.getFloat("pitch", 8.0); swingDurationMs  = prefs.getFloat("stime", 400.0);
+  pushDurationMs   = prefs.getFloat("ptime", 450.0); pauseDurationMs  = prefs.getFloat("pause", 100.0);
   leftOffset       = prefs.getFloat("l_off", 92.0); rightOffset      = prefs.getFloat("r_off", 92.0);
   invertLeftServo  = prefs.getBool("inv_l", false); invertRightServo = prefs.getBool("inv_r", false);
   prefs.end();
@@ -295,7 +302,7 @@ void loadNVSConfig() {
 void saveNVSConfig() {
   prefs.begin("tars_cfg", false);
   prefs.putFloat("swing", legSwingAngle); prefs.putFloat("push", bodyPushAngle);
-  prefs.putFloat("pitch", pitchLiftAngle); prefs.putFloat("stime", swingDurationMs);
+  prefs.putFloat("pitch", clearanceLiftAngle); prefs.putFloat("stime", swingDurationMs);
   prefs.putFloat("ptime", pushDurationMs); prefs.putFloat("pause", pauseDurationMs);
   prefs.putFloat("l_off", leftOffset); prefs.putFloat("r_off", rightOffset);
   prefs.putBool("inv_l", invertLeftServo); prefs.putBool("inv_r", invertRightServo);
@@ -363,7 +370,7 @@ void updateDisplaySystem() {
 }
 
 // =========================================================================
-// 5. 5-PHASE KINEMATIC GAIT ENGINE
+// 5. HIGH-CLEARANCE ANTI-DRAG GAIT ENGINE
 // =========================================================================
 void updatePhaseGaitEngine() {
     static unsigned long lastLoopTime = 0;
@@ -371,10 +378,21 @@ void updatePhaseGaitEngine() {
     if (currentMillis - lastLoopTime < 15) return; 
     lastLoopTime = currentMillis;
 
+    // --- SMOOTH WAKE SHAKE ANIMATION ---
     if (isWakeShaking) {
         unsigned long elapsedShake = currentMillis - wakeShakeStartTime;
-        if (elapsedShake < 400) { float offset = sin(elapsedShake * 0.03) * 8.0; moveServos(leftOffset + offset, rightOffset - offset); return; } 
-        else { isWakeShaking = false; }
+        // 600ms duration: Rapid, noticeable double-wiggle to acknowledge the user
+        if (elapsedShake < 600) { 
+            float offset = sin(elapsedShake * 0.04) * 12.0; 
+            moveServos(leftOffset + offset, rightOffset - offset); 
+            return; 
+        } else { 
+            isWakeShaking = false; 
+            // Snaps servos back to idle position
+            currentLeftAngle = leftOffset;
+            currentRightAngle = rightOffset;
+            moveServos(leftOffset, rightOffset);
+        }
     }
 
     if (isCharging) {
@@ -390,11 +408,11 @@ void updatePhaseGaitEngine() {
 
     float activeTargetX = targetX, activeTargetY = targetY;
     if (aiStepsActive) { activeTargetX = aiTargetX * 100.0; activeTargetY = aiTargetY * 100.0; }
-    currentX += (activeTargetX - currentX) * 0.15; currentY += (activeTargetY - currentY) * 0.15;
+    currentX += (activeTargetX - currentX) * 0.20; currentY += (activeTargetY - currentY) * 0.20;
     float normX = currentX / 100.0, normY = currentY / 100.0, magnitude = sqrt(normX * normX + normY * normY);
 
     if (magnitude < 0.08) {
-        currentPhase = PHASE_IDLE; currentLeftAngle += (leftOffset - currentLeftAngle) * 0.1; currentRightAngle += (rightOffset - currentRightAngle) * 0.1;
+        currentPhase = PHASE_IDLE; currentLeftAngle += (leftOffset - currentLeftAngle) * 0.15; currentRightAngle += (rightOffset - currentRightAngle) * 0.15;
         moveServos(currentLeftAngle, currentRightAngle); return;
     }
 
@@ -404,20 +422,51 @@ void updatePhaseGaitEngine() {
     if (abs(normY) >= abs(normX) - 0.1) {
         float dirSign = (normY >= 0.0) ? 1.0 : -1.0; float scale = abs(normY);
         switch (currentPhase) {
-            case PHASE_IDLE: currentPhase = PHASE_SWING_LEGS_FORWARD; phaseStartTime = currentMillis; break;
-            case PHASE_SWING_LEGS_FORWARD: targetLeft = leftOffset + (dirSign * legSwingAngle * scale) + (dirSign * pitchLiftAngle); targetRight = rightOffset - (dirSign * legSwingAngle * scale) - (dirSign * pitchLiftAngle); if (elapsedTime >= swingDurationMs) { currentPhase = PHASE_PLANT_LEGS; phaseStartTime = currentMillis; } break;
-            case PHASE_PLANT_LEGS: targetLeft = leftOffset + (dirSign * legSwingAngle * scale); targetRight = rightOffset - (dirSign * legSwingAngle * scale); if (elapsedTime >= pauseDurationMs) { currentPhase = PHASE_PUSH_BODY_FORWARD; phaseStartTime = currentMillis; } break;
-            case PHASE_PUSH_BODY_FORWARD: targetLeft = leftOffset - (dirSign * bodyPushAngle * scale) - (dirSign * pitchLiftAngle); targetRight = rightOffset + (dirSign * bodyPushAngle * scale) + (dirSign * pitchLiftAngle); if (elapsedTime >= pushDurationMs) { currentPhase = PHASE_PLANT_BODY; phaseStartTime = currentMillis; } break;
-            case PHASE_PLANT_BODY: targetLeft = leftOffset - (dirSign * bodyPushAngle * scale); targetRight = rightOffset + (dirSign * bodyPushAngle * scale); if (elapsedTime >= pauseDurationMs) { if (aiStepsActive) { aiStepsRemaining--; if (aiStepsRemaining <= 0) { aiStepsActive = false; currentPhase = PHASE_IDLE; } else { currentPhase = PHASE_SWING_LEGS_FORWARD; phaseStartTime = currentMillis; } } else { currentPhase = PHASE_SWING_LEGS_FORWARD; phaseStartTime = currentMillis; } } break;
+            case PHASE_IDLE: 
+                currentPhase = PHASE_LIFT_AND_SWING; phaseStartTime = currentMillis; break;
+            case PHASE_LIFT_AND_SWING: 
+                targetLeft = leftOffset + (dirSign * legSwingAngle * scale) + clearanceLiftAngle; 
+                targetRight = rightOffset - (dirSign * legSwingAngle * scale) - clearanceLiftAngle; 
+                if (elapsedTime >= swingDurationMs) { currentPhase = PHASE_PLANT; phaseStartTime = currentMillis; } break;
+            case PHASE_PLANT: 
+                targetLeft = leftOffset + (dirSign * legSwingAngle * scale); 
+                targetRight = rightOffset - (dirSign * legSwingAngle * scale); 
+                if (elapsedTime >= pauseDurationMs) { currentPhase = PHASE_PUSH_BODY; phaseStartTime = currentMillis; } break;
+            case PHASE_PUSH_BODY: 
+                targetLeft = leftOffset - (dirSign * bodyPushAngle * scale) - (clearanceLiftAngle * 0.5); 
+                targetRight = rightOffset + (dirSign * bodyPushAngle * scale) + (clearanceLiftAngle * 0.5); 
+                if (elapsedTime >= pushDurationMs) { currentPhase = PHASE_RECOVER; phaseStartTime = currentMillis; } break;
+            case PHASE_RECOVER: 
+                targetLeft = leftOffset - (dirSign * bodyPushAngle * scale); 
+                targetRight = rightOffset + (dirSign * bodyPushAngle * scale); 
+                if (elapsedTime >= pauseDurationMs) { 
+                    if (aiStepsActive) { aiStepsRemaining--; if (aiStepsRemaining <= 0) { aiStepsActive = false; currentPhase = PHASE_IDLE; } else { currentPhase = PHASE_LIFT_AND_SWING; phaseStartTime = currentMillis; } } 
+                    else { currentPhase = PHASE_LIFT_AND_SWING; phaseStartTime = currentMillis; } 
+                } break;
         }
     } else {
         float turnSign = (normX >= 0.0) ? 1.0 : -1.0; float scale = abs(normX);
         switch (currentPhase) {
-            case PHASE_IDLE: currentPhase = PHASE_SWING_LEGS_FORWARD; phaseStartTime = currentMillis; break;
-            case PHASE_SWING_LEGS_FORWARD: targetLeft = leftOffset + (turnSign * legSwingAngle * scale); targetRight = rightOffset + (turnSign * legSwingAngle * scale); if (elapsedTime >= swingDurationMs) { currentPhase = PHASE_PLANT_LEGS; phaseStartTime = currentMillis; } break;
-            case PHASE_PLANT_LEGS: targetLeft = leftOffset + (turnSign * legSwingAngle * scale); targetRight = rightOffset + (turnSign * legSwingAngle * scale); if (elapsedTime >= pauseDurationMs) { currentPhase = PHASE_PUSH_BODY_FORWARD; phaseStartTime = currentMillis; } break;
-            case PHASE_PUSH_BODY_FORWARD: targetLeft = leftOffset - (turnSign * bodyPushAngle * scale); targetRight = rightOffset - (turnSign * bodyPushAngle * scale); if (elapsedTime >= pushDurationMs) { currentPhase = PHASE_PLANT_BODY; phaseStartTime = currentMillis; } break;
-            case PHASE_PLANT_BODY: targetLeft = leftOffset - (turnSign * bodyPushAngle * scale); targetRight = rightOffset - (turnSign * bodyPushAngle * scale); if (elapsedTime >= pauseDurationMs) { if (aiStepsActive) { aiStepsRemaining--; if (aiStepsRemaining <= 0) { aiStepsActive = false; currentPhase = PHASE_IDLE; } else { currentPhase = PHASE_SWING_LEGS_FORWARD; phaseStartTime = currentMillis; } } else { currentPhase = PHASE_SWING_LEGS_FORWARD; phaseStartTime = currentMillis; } } break;
+            case PHASE_IDLE: currentPhase = PHASE_LIFT_AND_SWING; phaseStartTime = currentMillis; break;
+            case PHASE_LIFT_AND_SWING: 
+                targetLeft = leftOffset + (turnSign * legSwingAngle * scale) + clearanceLiftAngle; 
+                targetRight = rightOffset + (turnSign * legSwingAngle * scale) - clearanceLiftAngle; 
+                if (elapsedTime >= swingDurationMs) { currentPhase = PHASE_PLANT; phaseStartTime = currentMillis; } break;
+            case PHASE_PLANT: 
+                targetLeft = leftOffset + (turnSign * legSwingAngle * scale); 
+                targetRight = rightOffset + (turnSign * legSwingAngle * scale); 
+                if (elapsedTime >= pauseDurationMs) { currentPhase = PHASE_PUSH_BODY; phaseStartTime = currentMillis; } break;
+            case PHASE_PUSH_BODY: 
+                targetLeft = leftOffset - (turnSign * bodyPushAngle * scale) - (clearanceLiftAngle * 0.5); 
+                targetRight = rightOffset - (turnSign * bodyPushAngle * scale) + (clearanceLiftAngle * 0.5); 
+                if (elapsedTime >= pushDurationMs) { currentPhase = PHASE_RECOVER; phaseStartTime = currentMillis; } break;
+            case PHASE_RECOVER: 
+                targetLeft = leftOffset - (turnSign * bodyPushAngle * scale); 
+                targetRight = rightOffset - (turnSign * bodyPushAngle * scale); 
+                if (elapsedTime >= pauseDurationMs) { 
+                    if (aiStepsActive) { aiStepsRemaining--; if (aiStepsRemaining <= 0) { aiStepsActive = false; currentPhase = PHASE_IDLE; } else { currentPhase = PHASE_LIFT_AND_SWING; phaseStartTime = currentMillis; } } 
+                    else { currentPhase = PHASE_LIFT_AND_SWING; phaseStartTime = currentMillis; } 
+                } break;
         }
     }
     currentLeftAngle += (targetLeft - currentLeftAngle) * servoSmoothFactor; currentRightAngle += (targetRight - currentRightAngle) * servoSmoothFactor;
@@ -441,7 +490,7 @@ void setup() {
     loadNVSConfig();
     servoLeft.attach(SERVO_LEFT_PIN); servoRight.attach(SERVO_RIGHT_PIN); moveServos(leftOffset, rightOffset);
 
-    // Initialize Audio I2S Tasks
+    // Initializing the new dual-core I2S Audio System
     setupAudio();
 
     display.clearDisplay(); display.setTextSize(1);
@@ -452,7 +501,7 @@ void setup() {
     server.on("/", []() { server.send(200, "text/html", HTML_INTERFACE); });
     server.on("/vector", []() { if (server.hasArg("x") && server.hasArg("y")) { aiStepsActive = false; qHead = 0; qTail = 0; targetX = server.arg("x").toFloat(); targetY = server.arg("y").toFloat(); server.send(200, "text/plain", "OK"); } });
     server.on("/config", []() {
-        if (server.hasArg("swing")) legSwingAngle = server.arg("swing").toFloat(); if (server.hasArg("push")) bodyPushAngle = server.arg("push").toFloat(); if (server.hasArg("pitch")) pitchLiftAngle = server.arg("pitch").toFloat();
+        if (server.hasArg("swing")) legSwingAngle = server.arg("swing").toFloat(); if (server.hasArg("push")) bodyPushAngle = server.arg("push").toFloat(); if (server.hasArg("pitch")) clearanceLiftAngle = server.arg("pitch").toFloat();
         if (server.hasArg("stime")) swingDurationMs = server.arg("stime").toFloat(); if (server.hasArg("ptime")) pushDurationMs = server.arg("ptime").toFloat(); if (server.hasArg("pause")) pauseDurationMs = server.arg("pause").toFloat();
         if (server.hasArg("l_off")) leftOffset = server.arg("l_off").toFloat(); if (server.hasArg("r_off")) rightOffset = server.arg("r_off").toFloat();
         if (server.hasArg("inv_l")) invertLeftServo = (server.arg("inv_l").toInt() == 1); if (server.hasArg("inv_r")) invertRightServo = (server.arg("inv_r").toInt() == 1);
@@ -470,7 +519,7 @@ void loop() {
     if (!activeClient || !activeClient.connected()) { activeClient = socketServer.available(); }
 
     if (activeClient && activeClient.connected() && activeClient.available()) {
-        // Capture Python's IP for UDP Audio Streaming target
+        // Grab Python Brain IP automatically when it connects via TCP so UDP knows where to send Mic data
         if (!pythonIpKnown) { pythonIP = activeClient.remoteIP(); pythonIpKnown = true; }
 
         String cmd = activeClient.readStringUntil('\n');
@@ -478,7 +527,15 @@ void loop() {
 
         if (cmd == "CHARGE_ON") { isCharging = true; } 
         else if (cmd == "CHARGE_OFF") { isCharging = false; } 
+        // WAKE_SHAKE Trigger
         else if (cmd == "WAKE_SHAKE") { isWakeShaking = true; wakeShakeStartTime = millis(); } 
+        else if (cmd.startsWith("CONFIG:")) {
+            String param = cmd.substring(7);
+            if(param == "faster") { swingDurationMs = 300.0; pushDurationMs = 350.0; pauseDurationMs = 50.0; servoSmoothFactor = 0.25;}
+            if(param == "slower") { swingDurationMs = 600.0; pushDurationMs = 650.0; pauseDurationMs = 200.0; servoSmoothFactor = 0.12;}
+            if(param == "higher") { clearanceLiftAngle = 12.0; legSwingAngle = 18.0; }
+            if(param == "reset")  { loadNVSConfig(); }
+        }
         else if (cmd.startsWith("DISP:")) {
             String payload = cmd.substring(5); int lineIdx = 0, startPos = 0;
             while(lineIdx < 4) {
@@ -498,5 +555,8 @@ void loop() {
             }
         }
     }
-    updatePhaseGaitEngine(); updateDisplaySystem();
+    
+    // Core 0 updates standard operations while Core 1 handles Audio
+    updatePhaseGaitEngine(); 
+    updateDisplaySystem();
 }
